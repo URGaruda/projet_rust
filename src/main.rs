@@ -9,6 +9,12 @@ use std::convert::TryInto;
 5ème étape : Gestion de la primitive print 
 6ème étape : Ajout d'autres primitives (Optionnel) 
 */
+/*
+En gros ce que tu vas devoir faire c'est une pile pour empiler,dépiler les instructions,constantes que tu liras pour faire leurs executions
+Regarde le td pour des exemples 
+registres sont des places de la pile dans le contexte d'execution d'une fonction réfère toi à tes souvenirs et à la photo
+Prochaine étape : créer un interpreteur pour les instructions 
+*/
 const OPCODE_NAMES: [&str; 38] = [
         "MOVE", "LOADK", "LOADBOOL", "LOADNIL", "GETUPVAL", "GETGLOBAL",
         "GETTABLE", "SETGLOBAL", "SETUPVAL", "SETTABLE", "NEWTABLE", "SELF",
@@ -16,8 +22,107 @@ const OPCODE_NAMES: [&str; 38] = [
         "CONCAT", "JMP", "EQ", "LT", "LE", "TEST", "TESTSET", "CALL", "TAILCALL",
         "RETURN", "FORLOOP", "FORPREP", "TFORLOOP", "SETLIST", "CLOSE", "CLOSURE",
         "VARARG"
-    ];
+];
+enum type_inst {
+    IABC,
+    IABx,
+    IAsBx,
+}
 
+const TYPE_OPCODE: [type_inst;38] = [
+    type_inst::IABC,   // MOVE
+    type_inst::IABx,   // LOADK
+    type_inst::IABC,   // LOADBOOL
+    type_inst::IABC,   // LOADNIL
+    type_inst::IABC,   // GETUPVAL
+    type_inst::IABx,   // GETGLOBAL
+    type_inst::IABC,   // GETTABLE
+    type_inst::IABx,   // SETGLOBAL
+    type_inst::IABC,   // SETUPVAL
+    type_inst::IABC,   // SETTABLE
+    type_inst::IABC,   // NEWTABLE
+    type_inst::IABC,   // SELF
+    type_inst::IABC,   // ADD
+    type_inst::IABC,   // SUB
+    type_inst::IABC,   // MUL
+    type_inst::IABC,   // DIV
+    type_inst::IABC,   // MOD
+    type_inst::IABC,   // POW
+    type_inst::IABC,   // UNM
+    type_inst::IABC,   // NOT
+    type_inst::IABC,   // LEN
+    type_inst::IABC,   // CONCAT
+    type_inst::IAsBx,  // JMP
+    type_inst::IABC,   // EQ
+    type_inst::IABC,   // LT
+    type_inst::IABC,   // LE
+    type_inst::IABC,   // TEST
+    type_inst::IABC,   // TESTSET
+    type_inst::IABC,   // CALL
+    type_inst::IABC,   // TAILCALL
+    type_inst::IABC,   // RETURN
+    type_inst::IAsBx,  // FORLOOP
+    type_inst::IAsBx,  // FORPREP
+    type_inst::IABC,   // TFORLOOP
+    type_inst::IABC,   // SETLIST
+    type_inst::IABC,   // CLOSE
+    type_inst::IABx,   // CLOSURE
+    type_inst::IABC,   // VARARG
+];
+
+fn affiche_op_inst(tab: &[u8], taille_inst: usize) {
+    for i in 0..taille_inst {
+        let inst = &tab[i * 4..(i + 1) * 4];
+        let opcode = inst[0] >> 2; // Les 6 premiers bits
+        let opcode_str = format!("{:06b}", opcode); // Convertir en chaîne de caractères binaire
+        if opcode < OPCODE_NAMES.len() as u8 {
+            println!("Instruction {}: Opcode : {} ({})", i, opcode_str, OPCODE_NAMES[opcode as usize]);
+        } else {
+            println!("Instruction {}: Opcode : {} (Unknown Opcode)", i, opcode_str);
+        }
+        match opcode {
+            0 => {
+                let a = ((inst[0] & 0b11) as u16) << 6 | (inst[1] >> 2) as u16;
+                let aff_a = format!("{:08b}", a);
+                let b = ((inst[2] & 0b1) as u16) << 8 | inst[3] as u16;
+                let aff_b = format!("{:09b}", b);
+                println!(" R({}) := R({})", aff_a, aff_b);
+                println!(" R({}) := R({})", a, b);
+            }
+            7 => {
+                let a = ((inst[0] & 0b11) as u16) << 6 | (inst[1] >> 2) as u16;
+                let aff_a = format!("{:08b}", a);
+                let b = ((inst[1] & 0b11) as u16) << 6 | (inst[2] >> 2) as u16;
+                let aff_b = format!("{:08b}", b);
+                println!(" Gbl[Kst({})] := R({})", aff_b, aff_a);
+                println!(" Gbl[Kst({})] := R({})", b, a);
+
+            }
+            16 => {
+                let a = ((inst[0] & 0b11) as u16) << 6 | (inst[1] >> 2) as u16;
+                let aff_a = format!("{:08b}", a);
+                let b = ((inst[1] & 0b11) as u16) << 7 | (inst[2] >> 1) as u16;
+                let aff_b = format!("{:09b}", b);
+                let c = ((inst[2] & 0b1) as u16) << 8 | inst[3] as u16;
+                let aff_c = format!("{:09b}", c);
+                println!(" R({}) := RK({}) % RK({})", aff_a, aff_b, aff_c);
+                println!(" R({}) := RK({}) % RK({})", a, b, c);
+            }
+            35 => {
+                let a = ((inst[0] & 0b11) as u16) << 6 | (inst[1] >> 2) as u16;
+                let aff_a = format!("{:08b}", a);
+                println!("close all variables in the stack up to (>=) R({})", aff_a);
+                println!("close all variables in the stack up to (>=) R({})", a);
+            }
+            _ => {
+                println!("Unknown opcode: {}", opcode);
+            }
+        }
+        let next_bits = ((inst[0] & 0b11) as u16) << 6 | (inst[1] >> 2) as u16;
+        let next_bits_str = format!("{:08b}", next_bits);
+        println!("Next 8 bits: {}", next_bits_str);
+    }
+}
 fn u8_to_i32 (val :u8) -> i32 {
     val as i32
 }
@@ -535,19 +640,8 @@ fn main() -> io::Result<()> {
     let id_code_inst = id_ls+size_int;
     let code_inst: Option<&[u8]> = buffer.get(id_code_inst..id_code_inst+(taille_inst*4));
     println!("code value : {:?} ",code_inst);
-    let first_inst=buffer.get(id_code_inst..id_code_inst+(taille_inst));
     if let Some(code_inst) = code_inst { // Fait par Copilot  
-        for i in 0..taille_inst {
-            let inst = &code_inst[i*4..(i+1)*4];
-            let opcode = inst[0] >> 2; // Les 6 premiers bits
-            let opcode_str = format!("{:06b}", opcode); // Convertir en chaîne de caractères binaire
-            //println!("Instruction {}: Opcode : {}", i, opcode_str);
-            if opcode < OPCODE_NAMES.len() as u8 {
-                println!("Instruction {}: Opcode : {} ({})", i, opcode_str, OPCODE_NAMES[opcode as usize]);
-            } else {
-                println!("Instruction {}: Opcode : {} (Unknown Opcode)", i, opcode_str);
-            }
-        }
+        affiche_op_inst(code_inst,taille_inst);
     } else {
         println!("No instructions found");
     }
