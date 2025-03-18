@@ -168,8 +168,29 @@ fn convert_to_chaine(ls : &[u8]) -> Vec<char> {
     }
     res
 }
+//Constant list
+// Number of constants - Integer 
+fn parse_const_list(ls : &[u8], begin : usize,size_int : usize,endian:i32) -> usize {
+    let mut taille_ls_const: usize = 0;
+    let u8_const_ls: Option<&[u8]> = ls.get(begin..begin+size_int);
+    match u8_const_ls {
+        //Some(value_line) => taille_ls_const= byte_to_number(value_line) as usize,
+        Some(value_line) => if endian == 1 {
+            taille_ls_const = u32::from_le_bytes(value_line.try_into().expect("slice with incorrect length")) as usize
+        }else{
+            taille_ls_const = u32::from_be_bytes(value_line.try_into().expect("slice with incorrect length")) as usize
+        },
+        None => println!("no Value"),
+    }
+    println!("Nombre de constantes du code en liste de byte {:?} ",u8_const_ls);
 
-fn parse_const_list(ls : &[u8], begin : usize,taille : usize,endian:i32) -> usize {// va lire les bytes concernant la
+    println!("Nombre des constantes : {} ",taille_ls_const); 
+
+    affiche_const_list(ls, begin+size_int, taille_ls_const, endian)
+
+}
+
+fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,endian:i32) -> usize {// va lire les bytes concernant la
     let mut tmp = begin ;
     let mut i = 0;
     while i < taille {
@@ -319,7 +340,7 @@ fn parse_func_block(ls : &[u8], begin : usize,taille : i32,size_int : usize,size
     println!("Nombre des constantes : {} ",taille_inst); 
 
     let id_cs = id_cs + size_int;
-    let mut id_func_proc = parse_const_list(ls, id_cs, taille_inst,endian);
+    let mut id_func_proc = affiche_const_list(ls, id_cs, taille_inst,endian);
 
     println!("debut des fonction protocole = {} ",id_func_proc);
 
@@ -520,53 +541,83 @@ fn parse_upvalue_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,en
     }
     tmp
 }
+fn affiche_header(ls :&[u8],verbose : bool)  ->(i32,usize,usize,usize,usize,usize,usize){
+    let taille_fic: usize = ls.len();
+    let header = ls.get(0..4).unwrap_or(&[]);
+    let version_n = unwrap_to_i32(ls.get(4),-1);
+    let format_v = unwrap_to_i32(ls.get(5),-1);
+    let endian = unwrap_to_i32(ls.get(6),-1);
+    let size_int = unwrap_to_i32(ls.get(7),-1) as usize;// Taille d'un Integer
+    let size_st = unwrap_to_i32(ls.get(8),-1) as usize;// Taille d'un Size_T
+    let size_inst = unwrap_to_i32(ls.get(9),-1) as usize;
+    let size_luanb = unwrap_to_i32(ls.get(10),-1) as usize;
+    let size_flag = unwrap_to_i32(ls.get(11),-1) as usize;
+    if verbose {
+        println!("La valeur de bitvec est : {:?} \net sa taille {taille_fic} ", ls);
+        println!("header : {:?}", header);
+        println!("version : {:?}", version_n);
+        println!("format : {:?}", format_v);
+        println!("endian : {:?}", endian);
+        println!("size_int : {:?}", size_int);
+        println!("size_st : {:?}", size_st);
+        println!("size_inst : {:?}", size_inst);
+        println!("size_luanb : {:?}", size_luanb);
+        println!("size_flag : {:?}", size_flag);
+    }
+    (endian,size_int,size_st,size_inst,size_luanb,size_flag,taille_fic)
+}
+
+// Instuction list
+// Les instructions font 4 bytes = 32 octets (1 bytes = 8 bits = 1 octets)
+fn parse_inst_list(ls : &[u8], begin : usize,size_int : usize,size_inst:usize,endian:i32) -> usize {
+
+    let mut taille_ls_inst: usize = 0;
+    let size_code_inst: Option<&[u8]> = ls.get(begin..begin+size_int);
+    match size_code_inst {
+        //Some(value_line) => taille_ls_inst= byte_to_number(value_line) as usize,
+        Some(value_line) => if endian == 1 {
+            taille_ls_inst = u32::from_le_bytes(value_line.try_into().expect("slice with incorrect length")) as usize
+        }else{
+            taille_ls_inst = u32::from_be_bytes(value_line.try_into().expect("slice with incorrect length")) as usize
+        },
+        None => println!("no Value"),
+    }
+    println!("Nombre des inst du code en liste de byte {:?} ",size_code_inst);
+    
+    println!("Nombre des inst du code en entier : {} ",taille_ls_inst); 
+    let id_code_inst = begin+size_int;
+    let code_inst: Option<&[u8]> = ls.get(id_code_inst..id_code_inst+(taille_ls_inst*size_inst));
+    println!("code value : {:?} ",code_inst);
+    if let Some(code_inst) = code_inst { // Fait par Copilot  
+        affiche_op_inst(code_inst,taille_ls_inst);
+    } else {
+        println!("No instructions found");
+    }
+    id_code_inst+(taille_ls_inst*size_inst)
+}
+
+
 fn main() -> io::Result<()> {
     let mut file = File::open("luac.out")?;
     let mut buffer = Vec::new();
-    
     io::copy(&mut file, &mut buffer)?; // en décimal
-    
     file.seek(SeekFrom::Start(0))?;
-    
-    let taille_fic: usize = buffer.len();
-    println!("La valeur de bitvec est : {:?} \net sa taille {taille_fic} ", buffer);
-
-    let header = buffer.get(0..4).unwrap_or(&[]);
-    println!("header : {:?}", header);
-
-    let version_n = unwrap_to_i32(buffer.get(4),-1);
-    println!("version : {:?}", version_n);
-
-    let format_v = unwrap_to_i32(buffer.get(5),-1);
-    println!("format : {:?}", format_v);
-
-    let endian = unwrap_to_i32(buffer.get(6),-1);
-    println!("endian : {:?}", endian);
-
-    let size_int = unwrap_to_i32(buffer.get(7),-1) as usize;// Taille d'un Integer
-    println!("size_int : {:?}", size_int);
-
-    let size_st = unwrap_to_i32(buffer.get(8),-1) as usize;// Taille d'un Size_T
-    println!("size_st : {:?}", size_st);
-
-    let size_inst = unwrap_to_i32(buffer.get(9),-1) as usize;
-    println!("size_inst : {:?}", size_inst);
-
-    let size_luanb = unwrap_to_i32(buffer.get(10),-1) as usize;
-    println!("size_luanb : {:?}", size_luanb);
-
-    let size_flag = unwrap_to_i32(buffer.get(11),-1) as usize;
-    println!("size_flag : {:?}", size_flag);
-
+    let res=affiche_header(&buffer, true);
+    let endian = res.0;
+    let size_int = res.1;
+    let size_st = res.2;
+    let size_inst = res.3;
+    let size_luanb = res.4;
+    let size_flag = res.5;
+    let taille_fichier = res.6;
     //Body 
 
-    let chunk = buffer.get(12..taille_fic);
+    let chunk = buffer.get(12..taille_fichier);
     match chunk {
         Some(chunk) => println!("chunk : {:?}",chunk),
         None => println!("No chunk"),   
     }
     
-
     let to_name : usize = 12+size_st;
     let size_name = buffer.get(12..to_name);//12+valeur de size_st_op (même -1 pour ignorer le dernier caractère qui vaut 0)
     match size_name {
@@ -620,55 +671,12 @@ fn main() -> io::Result<()> {
     let max_stack_sz = unwrap_to_i32(buffer.get(id_1+3),-1) as usize;
     println!("max_stack_sz : {:?}", max_stack_sz);
     
-    // Instuction list
-    // Les instructions font 4 bytes = 32 octets (1 bytes = 8 bits = 1 octets)
-    let id_ls = id_1+4;
-    let mut taille_inst: usize = 0;
-    let size_code_inst: Option<&[u8]> = buffer.get(id_ls..id_ls+size_int);
-    match size_code_inst {
-        //Some(value_line) => taille_inst= byte_to_number(value_line) as usize,
-        Some(value_line) => if endian == 1 {
-            taille_inst = u32::from_le_bytes(value_line.try_into().expect("slice with incorrect length")) as usize
-        }else{
-            taille_inst = u32::from_be_bytes(value_line.try_into().expect("slice with incorrect length")) as usize
-        },
-        None => println!("no Value"),
-    }
-    println!("Nombre des inst du code en liste de byte {:?} ",size_code_inst);
+    let id_cs = parse_inst_list(&buffer, id_1+4,size_int,size_inst,endian);
     
-    println!("Nombre des inst du code en entier : {} ",taille_inst); // c'est une liste de taille Integer 
-    let id_code_inst = id_ls+size_int;
-    let code_inst: Option<&[u8]> = buffer.get(id_code_inst..id_code_inst+(taille_inst*4));
-    println!("code value : {:?} ",code_inst);
-    if let Some(code_inst) = code_inst { // Fait par Copilot  
-        affiche_op_inst(code_inst,taille_inst);
-    } else {
-        println!("No instructions found");
-    }
-        
-    
-    //Constant list
-    // Number of constants - Integer 
-   
-    let id_cs = id_code_inst+(taille_inst*4);
-    let mut taille_inst: usize = 0;
-    let size_const_ls: Option<&[u8]> = buffer.get(id_cs..id_cs+size_int);
-    match size_const_ls {
-        //Some(value_line) => taille_inst= byte_to_number(value_line) as usize,
-        Some(value_line) => if endian == 1 {
-            taille_inst = u32::from_le_bytes(value_line.try_into().expect("slice with incorrect length")) as usize
-        }else{
-            taille_inst = u32::from_be_bytes(value_line.try_into().expect("slice with incorrect length")) as usize
-        },
-        None => println!("no Value"),
-    }
-    println!("Nombre de constantes du code en liste de byte {:?} ",size_const_ls);
+    let mut id_func_proc = parse_const_list(&buffer, id_cs,size_int,endian);
 
-    println!("Nombre des constantes : {} ",taille_inst); 
-
-    let id_cs = id_cs + size_int;
-    let mut id_func_proc = parse_const_list(&buffer, id_cs, taille_inst,endian);
-
+    // Function protocole 
+    //Debut parsing function protocole 
     println!("debut des fonction protocole = {} ",id_func_proc);
 
     let size_func_proc = buffer.get(id_func_proc..id_func_proc+size_int);
@@ -683,7 +691,8 @@ fn main() -> io::Result<()> {
     println!("Nombre des inst du code en entier : {} ",taille_func_proc);
 
     id_func_proc=parse_func_block(&buffer, id_func_proc+size_int, taille_func_proc , size_int, size_st, endian);
-    // c'est une liste de taille Integer 
+    // fin parsing function protocole 
+    
     let mut tmp = parse_source_line(&buffer,id_func_proc , size_int, endian);
     tmp= parse_local_list(&buffer,tmp , size_int,size_st, endian);
     println!("tmp avant upvalue {} ",tmp);
