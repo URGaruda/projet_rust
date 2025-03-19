@@ -1,7 +1,9 @@
+#![allow(warnings)]
 use std::arch::global_asm;
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom};
 use std::convert::TryInto;
+use std::ops::Add;
 /*
 1ère étape : Parsing du header de luac.out 
 2ème étape : Parsing des function blocks 
@@ -16,10 +18,19 @@ Regarde le td pour des exemples
 registres sont des places de la pile dans le contexte d'execution d'une fonction réfère toi à tes souvenirs et à la photo
 Prochaine étape : créer un interpreteur pour les instructions 
 */
-const KB :i32=1024;
-const MB :i32=1024*KB;
-const GB :i32=1024*MB;
 
+
+
+const KB :usize=1024;
+const MB :usize=1024*KB;
+const GB :usize=1024*MB;
+
+
+static mut STACK: Registre = Registre{ liste : Vec::new()};
+static mut INSTRUCTION: Vec<(u32,u32,u32,u32)> = Vec::new();
+static mut CONSTANTES: Const_list = Const_list {liste : Vec::new()};
+static mut GLOBAL: Vec<glb_func> =Vec::new();
+static mut PC :i32 = 0;
 
 const OPCODE_NAMES: [&str; 38] = [
         "MOVE", "LOADK", "LOADBOOL", "LOADNIL", "GETUPVAL", "GETGLOBAL",
@@ -36,46 +47,157 @@ enum type_inst {
     IAsBx,
 }
 
-const TYPE_OPCODE: [type_inst;38] = [
-    type_inst::IABC,   // MOVE
-    type_inst::IABx,   // LOADK
-    type_inst::IABC,   // LOADBOOL
-    type_inst::IABC,   // LOADNIL
-    type_inst::IABC,   // GETUPVAL
-    type_inst::IABx,   // GETGLOBAL
-    type_inst::IABC,   // GETTABLE
-    type_inst::IABx,   // SETGLOBAL
-    type_inst::IABC,   // SETUPVAL
-    type_inst::IABC,   // SETTABLE
-    type_inst::IABC,   // NEWTABLE
-    type_inst::IABC,   // SELF
-    type_inst::IABC,   // ADD
-    type_inst::IABC,   // SUB
-    type_inst::IABC,   // MUL
-    type_inst::IABC,   // DIV
-    type_inst::IABC,   // MOD
-    type_inst::IABC,   // POW
-    type_inst::IABC,   // UNM
-    type_inst::IABC,   // NOT
-    type_inst::IABC,   // LEN
-    type_inst::IABC,   // CONCAT
-    type_inst::IAsBx,  // JMP
-    type_inst::IABC,   // EQ
-    type_inst::IABC,   // LT
-    type_inst::IABC,   // LE
-    type_inst::IABC,   // TEST
-    type_inst::IABC,   // TESTSET
-    type_inst::IABC,   // CALL
-    type_inst::IABC,   // TAILCALL
-    type_inst::IABC,   // RETURN
-    type_inst::IAsBx,  // FORLOOP
-    type_inst::IAsBx,  // FORPREP
-    type_inst::IABC,   // TFORLOOP
-    type_inst::IABC,   // SETLIST
-    type_inst::IABC,   // CLOSE
-    type_inst::IABx,   // CLOSURE
-    type_inst::IABC,   // VARARG
+#[derive(Clone)]
+enum TypeLua {
+    Nil,
+    Boolean(bool),
+    Number(f64),
+    String(String), 
+    Primitive(glb_func),
+}
+
+
+
+impl Add for TypeLua { // Merci copilot (sinon j'allais juste créer une fonction add(typeLua,typeLua))
+    type Output = TypeLua;
+
+    fn add(self, other: TypeLua) -> TypeLua {
+        match (self, other) {
+            (TypeLua::Number(a), TypeLua::Number(b)) => TypeLua::Number(a + b),
+            _ => TypeLua::Nil, // Return Nil for unsupported operations
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum glb_func {
+    print,
+    nil,
+}
+
+struct Registre {
+    liste: Vec<TypeLua>,
+}
+
+impl Registre {
+    fn get(&self,index :usize) -> TypeLua{
+        match self.liste.get(index) {
+            Some(value) => value.clone(),
+            None => TypeLua::Nil,
+            
+        }
+    }
+}
+
+struct const_type { // représente les constantes qu'on pourras lire du parsing 
+    types :i32, // 0 si le type représente un booléen, 1 un entier, 2 un string
+    booléen:u8, 
+    entier :f64,
+    chaîne : String,
+}
+
+struct Const_list {
+    liste: Vec<const_type>,
+}
+ 
+impl Const_list {
+    fn get(&self,index :usize) -> const_type{
+        match self.liste.get(index) {
+            Some(value) => const_type { types: (value.types), booléen: (value.booléen), entier: (value.entier), chaîne: (value.chaîne.clone()) },
+            None => const_type { types: (-1), booléen: (0), entier: (0.0), chaîne: String::new() },
+            
+        }
+    }
+}
+fn str_to_glb(var : String) -> glb_func {
+    if var.eq("print") {glb_func::print}else{glb_func::nil}
+}
+
+fn const_to_luaType(var : const_type,isPrimitive : bool) -> TypeLua {
+    match var.types {
+        0 => TypeLua::Boolean(if var.booléen==0{true}else{false}),
+        1 => TypeLua::Number((var.entier)),
+        2 => if isPrimitive {TypeLua::Primitive((str_to_glb(var.chaîne)))}else{TypeLua::String(var.chaîne)}
+        _ => TypeLua::Nil,
+        
+    }
+}
+
+fn vm() { // fonction qui va agir de VM pour le bytecode lua 
+    unsafe {
+    let mut i = 0;
+    
+    while(i<INSTRUCTION.len()){
+        match INSTRUCTION.get(i) {
+            Some(&(opcode,a,b,c)) =>{
+
+                match opcode {
+                    1 => {
+                        STACK.liste[a as usize] = const_to_luaType(CONSTANTES.get(b as usize),false);
+                    }
+                    5 => {
+                        STACK.liste[a as usize] = const_to_luaType(CONSTANTES.get(b as usize),true);
+                    }
+                    12 => {
+                        STACK.liste[a as usize] = STACK.liste[b as usize].clone() + STACK.liste[c as usize].clone() ;
+                    }
+                    
+                    _ => {
+                        println!("Unhandled opcode: {}", opcode);
+                    }
+
+                }
+            }
+            None => {
+                println!("Problème dans la VM");
+            }
+        }
+    }
+    }
+}
+
+const TYPE_OPCODE: [type_inst; 38] = [
+    type_inst::IABC,   // MOVE 0
+    type_inst::IABx,   // LOADK 1
+    type_inst::IABC,   // LOADBOOL 2
+    type_inst::IABC,   // LOADNIL 3
+    type_inst::IABC,   // GETUPVAL 4
+    type_inst::IABx,   // GETGLOBAL 5
+    type_inst::IABC,   // GETTABLE 6
+    type_inst::IABx,   // SETGLOBAL 7
+    type_inst::IABC,   // SETUPVAL 8
+    type_inst::IABC,   // SETTABLE 9
+    type_inst::IABC,   // NEWTABLE 10
+    type_inst::IABC,   // SELF 11
+    type_inst::IABC,   // ADD 12
+    type_inst::IABC,   // SUB 13
+    type_inst::IABC,   // MUL 14
+    type_inst::IABC,   // DIV 15
+    type_inst::IABC,   // MOD 16
+    type_inst::IABC,   // POW 17
+    type_inst::IABC,   // UNM 18
+    type_inst::IABC,   // NOT 19
+    type_inst::IABC,   // LEN 20
+    type_inst::IABC,   // CONCAT 21
+    type_inst::IAsBx,  // JMP 22
+    type_inst::IABC,   // EQ 23
+    type_inst::IABC,   // LT 24
+    type_inst::IABC,   // LE 25
+    type_inst::IABC,   // TEST 26
+    type_inst::IABC,   // TESTSET 27
+    type_inst::IABC,   // CALL 28
+    type_inst::IABC,   // TAILCALL 29
+    type_inst::IABC,   // RETURN 30
+    type_inst::IAsBx,  // FORLOOP 31
+    type_inst::IAsBx,  // FORPREP 32
+    type_inst::IABC,   // TFORLOOP 33
+    type_inst::IABC,   // SETLIST 34
+    type_inst::IABC,   // CLOSE 35
+    type_inst::IABx,   // CLOSURE 36
+    type_inst::IABC,   // VARARG 37
 ];
+
+
 fn get_bits(num: u32, p: u32, s: u32) -> u32 {
     (num >> p) & ((1 << s) - 1)
 }
@@ -107,12 +229,21 @@ fn affiche_op_inst(tab: &[u8], taille_inst: usize, endian: i32) {
             b=get_bits(data, 23, 9);
             c=get_bits(data, 14, 9);
             println!("a = {} , b = {} , c = {} ",a,b,c);
+            unsafe {
+                INSTRUCTION.push((opcode, a, b, c));
+            }
         }else if *tp == type_inst::IABx {
             b=get_bits(data, 14, 18);
             println!("a = {} , b = {}",a,b);
+            unsafe {
+                INSTRUCTION.push((opcode, a, b, 0));
+            }
         }else{
             b=get_bits(data, 14, 18)-131071;
             println!("a = {} , b = {}",a,b);
+            unsafe {
+                INSTRUCTION.push((opcode, a, b, 0));
+            }
         }
         
        
@@ -163,6 +294,16 @@ fn convert_to_chaine(ls : &[u8]) -> Vec<char> {
     }
     res
 }
+
+fn charVec_to_string(vecteur : Vec<char>) -> String {
+    let mut res : String = String::new();
+    for var in vecteur{
+        if var!='\0'{
+            res.push(var);
+        }
+    }
+    res
+}
 //Constant list
 // Number of constants - Integer 
 fn parse_const_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endian:i32) -> usize {
@@ -196,6 +337,14 @@ fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,size_t:usize,endi
         }
         if type_const == 1 { // Booléan donc 0 ou 1 
             let boolean = unwrap_to_i32(ls.get(tmp), -1);
+            /*unsafe {
+                CONSTANTES.push(const_type {
+                    types: 0, 
+                    booléen: boolean as u8,
+                    entier: 0.0, 
+                    chaîne: String::new(), 
+                });
+            }*/
             if boolean==0{
                 println!("Boolean = True");
             }else if boolean==1 {
@@ -217,6 +366,14 @@ fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,size_t:usize,endi
             } else {
                 println!("Erreur: Impossible de lire 8 octets pour le nombre Lua");
             }
+            /*unsafe {
+                CONSTANTES.push(const_type {
+                    types: 1, 
+                    booléen: 0,
+                    entier: lua_numb, 
+                    chaîne: String::new(), 
+                }); 
+            }*/
             println!("valeur du nombre lua = {} ", lua_numb);
         }
         if type_const == 4 {
@@ -241,6 +398,14 @@ fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,size_t:usize,endi
                 None => println!("No titre"),   
             }
             println!("valeur du titre : {:?} ",titre);
+            /*unsafe {
+                CONSTANTES.push(const_type {
+                    types: 2, 
+                    booléen: 0,
+                    entier: 0.0, 
+                    chaîne: charVec_to_string(titre), 
+                });
+            }*/
             tmp=tmp+size_t_value;
         }
         i=i+1;
