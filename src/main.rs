@@ -1,5 +1,6 @@
 #![allow(warnings)]
 use std::arch::global_asm;
+use std::collections::btree_map::Range;
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom};
 use std::convert::TryInto;
@@ -109,6 +110,17 @@ impl Const_list {
         }
     }
 }
+
+fn init_stack(taille : usize){
+    unsafe {
+    let mut i = 0;
+    while i < taille{
+        STACK.liste.push(TypeLua::Nil);
+        i=i+1;
+    }
+    }
+}
+
 fn str_to_glb(var : String) -> glb_func {
     if var.eq("print") {glb_func::print}else{glb_func::nil}
 }
@@ -122,6 +134,17 @@ fn const_to_luaType(var : const_type,isPrimitive : bool) -> TypeLua {
         
     }
 }
+
+fn primitive_print(var: &TypeLua) {
+    match var {
+        TypeLua::Nil => println!("Nil"),
+        TypeLua::Boolean(val) => println!("{}", val),
+        TypeLua::Number(val) => println!("{}", val),
+        TypeLua::String(val) => println!("{}", val),
+        TypeLua::Primitive(_) => println!("<Primitive Function>"),
+    }
+}
+
 
 fn vm() { // fonction qui va agir de VM pour le bytecode lua 
     unsafe {
@@ -141,7 +164,36 @@ fn vm() { // fonction qui va agir de VM pour le bytecode lua
                     12 => {
                         STACK.liste[a as usize] = STACK.liste[b as usize].clone() + STACK.liste[c as usize].clone() ;
                     }
+                    28 => { //R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
+                        let nb_arg = b-c;
+                        let nb_return = c-1;
+                        let get_fct = STACK.liste[a as usize].clone();
+                        match get_fct {
+                            TypeLua::Primitive(primitive) => {
+                                match primitive {
+                                    glb_func::print => {
+                                        let mut j = 0;
+                                        while j < nb_arg{
+                                            primitive_print(&STACK.liste[(a+(j+1)) as usize]);
+                                            j=j+1;
+                                        }
+                                    }
+                                    _ => { println!("pas de primitive prévu pour cet instruction")}
+                                }
+                            }
+                            _=>{println!(" Tu n'es pas une primitive ")}
+                        }
+                    }
+                    30 => {
+                        let nb_arg = b+a-1;
+                        let mut return_value: Vec<TypeLua> = Vec::new();
+                        let mut j = 0;
+                        while j < nb_arg{
+                            return_value.push(STACK.liste[(a+j) as usize].clone());
+                            j=j+1;
+                        }
                     
+                    }
                     _ => {
                         println!("Unhandled opcode: {}", opcode);
                     }
@@ -152,8 +204,10 @@ fn vm() { // fonction qui va agir de VM pour le bytecode lua
                 println!("Problème dans la VM");
             }
         }
+        i=i+1;
     }
     }
+    println!(" Fin du programme ");
 }
 
 const TYPE_OPCODE: [type_inst; 38] = [
@@ -214,33 +268,43 @@ fn bytes_to_u32(bytes: &[u8], endian: i32) -> u32 {
         ((bytes[0] as u32))
     }
 }
-fn affiche_op_inst(tab: &[u8], taille_inst: usize, endian: i32) {
+fn affiche_op_inst(tab: &[u8], taille_inst: usize, endian: i32,verbose : bool) {
     for i in 0..taille_inst {
         let inst = &tab[i * 4..(i + 1) * 4];
         let data = bytes_to_u32(inst, endian);
         let opcode = get_bits(data, 0, 6);
-        println!("Instruction {}: Opcode : {} ({})", i, opcode, OPCODE_NAMES[opcode as usize]);
+        if verbose {
+            println!("Instruction {}: Opcode : {} ({})", i, opcode, OPCODE_NAMES[opcode as usize]);
+        }
         let tp = &TYPE_OPCODE[opcode as usize];
         let a = get_bits(data, 6, 8);
         let b;
         let c;
-        println!(" tp = {:?} ",tp);
+        if verbose {
+            println!(" tp = {:?} ",tp);
+        }
         if *tp == type_inst::IABC {
             b=get_bits(data, 23, 9);
             c=get_bits(data, 14, 9);
-            println!("a = {} , b = {} , c = {} ",a,b,c);
+            if verbose {
+                println!("a = {} , b = {} , c = {} ",a,b,c);
+            }
             unsafe {
                 INSTRUCTION.push((opcode, a, b, c));
             }
         }else if *tp == type_inst::IABx {
             b=get_bits(data, 14, 18);
-            println!("a = {} , b = {}",a,b);
+            if verbose {
+                println!("a = {} , b = {}",a,b);
+            }
             unsafe {
                 INSTRUCTION.push((opcode, a, b, 0));
             }
         }else{
             b=get_bits(data, 14, 18)-131071;
-            println!("a = {} , b = {}",a,b);
+            if verbose{
+                println!("a = {} , b = {}",a,b);
+            }
             unsafe {
                 INSTRUCTION.push((opcode, a, b, 0));
             }
@@ -306,7 +370,7 @@ fn charVec_to_string(vecteur : Vec<char>) -> String {
 }
 //Constant list
 // Number of constants - Integer 
-fn parse_const_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endian:i32) -> usize {
+fn parse_const_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endian:i32,verbose : bool) -> usize {
     let mut taille_ls_const: usize = 0;
     let u8_const_ls: Option<&[u8]> = ls.get(begin..begin+size_int);
     match u8_const_ls {
@@ -318,40 +382,46 @@ fn parse_const_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endi
         },
         None => println!("no Value"),
     }
-    println!("Nombre de constantes du code en liste de byte {:?} ",u8_const_ls);
+    if verbose {
+        println!("Nombre de constantes du code en liste de byte {:?} ",u8_const_ls);
 
-    println!("Nombre des constantes : {} ",taille_ls_const); 
-
-    affiche_const_list(ls, begin+size_int, taille_ls_const,size_t, endian)
+        println!("Nombre des constantes : {} ",taille_ls_const); 
+    }
+    affiche_const_list(ls, begin+size_int, taille_ls_const,size_t, endian,verbose)
 
 }
 
-fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,size_t:usize,endian:i32) -> usize {// va lire les bytes concernant la
+fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,size_t:usize,endian:i32,verbose : bool) -> usize {// va lire les bytes concernant la
     let mut tmp = begin ;
     let mut i = 0;
     while i < taille {
         let type_const = unwrap_to_i32(ls.get(tmp), -1);
         tmp=tmp+1;
         if type_const == 0 { // il n'y a pas de data on ignore 
-            println!("Ignore");
+            if verbose{
+                println!("Ignore");
+            }
         }
         if type_const == 1 { // Booléan donc 0 ou 1 
             let boolean = unwrap_to_i32(ls.get(tmp), -1);
-            /*unsafe {
-                CONSTANTES.push(const_type {
+            unsafe {
+                CONSTANTES.liste.push(const_type {
                     types: 0, 
                     booléen: boolean as u8,
                     entier: 0.0, 
                     chaîne: String::new(), 
                 });
-            }*/
-            if boolean==0{
-                println!("Boolean = True");
-            }else if boolean==1 {
-                println!("Boolean = False");
-            }else{
-                println!("Boolean = ???");
             }
+            if verbose {
+                if boolean==0{
+                    println!("Boolean = True");
+                }else if boolean==1 {
+                    println!("Boolean = False");
+                }else{
+                    println!("Boolean = ???");
+                }
+            }
+            
             tmp=tmp+1;
         }
         if type_const == 3 { // Lua Number 8 bytes // obtenue par ChatGPT 
@@ -366,15 +436,17 @@ fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,size_t:usize,endi
             } else {
                 println!("Erreur: Impossible de lire 8 octets pour le nombre Lua");
             }
-            /*unsafe {
-                CONSTANTES.push(const_type {
+            unsafe {
+                CONSTANTES.liste.push(const_type {
                     types: 1, 
                     booléen: 0,
                     entier: lua_numb, 
                     chaîne: String::new(), 
                 }); 
-            }*/
-            println!("valeur du nombre lua = {} ", lua_numb);
+            }
+            if verbose{
+                println!("valeur du nombre lua = {} ", lua_numb);
+            }
         }
         if type_const == 4 {
             let size_name = ls.get(tmp..tmp+size_t);
@@ -389,23 +461,26 @@ fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,size_t:usize,endi
                                         } ,
                 None => println!("No size_t_value"),
             }
-            println!("size_t_value : {} ",size_t_value);
-
+            if verbose{
+                println!("size_t_value : {} ",size_t_value);
+            }
             let titre_op = ls.get(tmp..(tmp+size_t_value));
             let mut titre: Vec<char> = Vec::new();
             match titre_op {
                 Some(val_titre) => titre = convert_to_chaine(val_titre) ,
                 None => println!("No titre"),   
             }
-            println!("valeur du titre : {:?} ",titre);
-            /*unsafe {
-                CONSTANTES.push(const_type {
+            if verbose{
+                println!("valeur du titre : {:?} ",titre);
+            }
+            unsafe {
+                CONSTANTES.liste.push(const_type {
                     types: 2, 
                     booléen: 0,
                     entier: 0.0, 
                     chaîne: charVec_to_string(titre), 
                 });
-            }*/
+            }
             tmp=tmp+size_t_value;
         }
         i=i+1;
@@ -414,12 +489,12 @@ fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,size_t:usize,endi
 }
 
 
-fn parse_func_block(ls : &[u8], begin : usize,taille : i32,size_int : usize,size_t:usize,size_inst:usize,endian:i32) -> usize {
+fn parse_func_block(ls : &[u8], begin : usize,taille : i32,size_int : usize,size_t:usize,size_inst:usize,endian:i32,verbose : bool) -> usize {
     if taille <= 0{return begin;}
     let to_name = begin+size_t;
     let size_name = ls.get(begin..to_name);//12+valeur de size_st_op (même -1 pour ignorer le dernier caractère qui vaut 0)
     match size_name {
-        Some(size_name) => println!("size__func_name : {:?}",size_name),
+        Some(size_name) => {if verbose {println!("size__func_name : {:?}",size_name)}},
         None => println!("No size_func_name"),   
     }
     let mut size_t_value = 0;
@@ -429,21 +504,23 @@ fn parse_func_block(ls : &[u8], begin : usize,taille : i32,size_int : usize,size
         None => println!("No size_t_func_value"),
     }
     
-    println!("size_t_func_value : {} ",size_t_value);
-
+    if verbose{
+        println!("size_t_func_value : {} ",size_t_value);
+    }
     let titre_op = ls.get(to_name..(to_name+size_t_value));
     let mut titre: Vec<char> = Vec::new();
     match titre_op {
         Some(val_titre) => titre = convert_to_chaine(val_titre) ,
         None => println!("No titre"),   
     }
-    println!("valeur du titre : {:?} ",titre);
-
+    if verbose{
+        println!("valeur du titre : {:?} ",titre);
+    }
     let first_line_int = to_name+size_t_value;
     
     let first_line = ls.get((first_line_int)..(first_line_int+size_int));
     match first_line {
-        Some(value_line) => println!("first_line : {:?}",value_line),
+        Some(value_line) => if verbose {println!("first_line : {:?}",value_line)},
         None => println!("No first_line"),   
     }
 
@@ -451,33 +528,37 @@ fn parse_func_block(ls : &[u8], begin : usize,taille : i32,size_int : usize,size
     
     let last_line = ls.get((last_line_int)..(last_line_int+size_int));
     match last_line {
-        Some(value_line) => println!("last_line : {:?}",value_line),
+        Some(value_line) => if verbose{println!("last_line : {:?}",value_line)},
         None => println!("No last_line"),   
     }
     
     let id_1 = last_line_int+size_int;
 
     let nb_upval = unwrap_to_i32(ls.get(id_1),-1) as usize;
-    println!("nb_upval : {:?}", nb_upval);
-
+    
     let nb_param = unwrap_to_i32(ls.get(id_1+1),-1) as usize;
-    println!("nb_param : {:?}", nb_param);
-
+    
     let var_flag = unwrap_to_i32(ls.get(id_1+2),-1) as usize;
-    println!("var_flag : {:?}", var_flag);
 
     let max_stack_sz = unwrap_to_i32(ls.get(id_1+3),-1) as usize;
-    println!("max_stack_sz : {:?}", max_stack_sz);
+    
+    if verbose {
+        println!("nb_upval : {:?}", nb_upval);
+        println!("nb_param : {:?}", nb_param);
+        println!("var_flag : {:?}", var_flag);
+        println!("max_stack_sz : {:?}", max_stack_sz);
+    }
     // Instuction list
     // Les instructions font 4 bytes = 32 octets (1 bytes = 8 bits = 1 octets)
-    let id_cs = parse_inst_list(ls, id_1+4,size_int,size_inst,endian);
+    let id_cs = parse_inst_list(ls, id_1+4,size_int,size_inst,endian,verbose);
     
-    let mut id_func_proc = parse_const_list(ls, id_cs,size_int,size_t,endian);
+    let mut id_func_proc = parse_const_list(ls, id_cs,size_int,size_t,endian,verbose);
 
     // Function protocole 
     //Debut parsing function protocole 
-    println!("debut des fonction protocole = {} ",id_func_proc);
-
+    if verbose{
+        println!("debut des fonction protocole = {} ",id_func_proc);
+    }
     let size_func_proc = ls.get(id_func_proc..id_func_proc+size_int);
     let mut taille_func_proc = -1;
     match size_func_proc {
@@ -485,23 +566,28 @@ fn parse_func_block(ls : &[u8], begin : usize,taille : i32,size_int : usize,size
         Some(value_line) => taille_func_proc = i32::from_le_bytes(value_line.try_into().expect("slice with incorrect length")),
         None => println!("no Value"),
     }
-    println!("Nombre des inst du code en liste de byte {:?} ",size_func_proc);
+    if verbose {
+        println!("Nombre des inst du code en liste de byte {:?} ",size_func_proc);
+        println!("Nombre des inst du code en entier : {} ",taille_func_proc);
+    }
     
-    println!("Nombre des inst du code en entier : {} ",taille_func_proc);
 
-    id_func_proc=parse_func_block(ls, id_func_proc+size_int, taille_func_proc , size_int, size_t,size_inst, endian);
+    id_func_proc=parse_func_block(ls, id_func_proc+size_int, taille_func_proc , size_int, size_t,size_inst, endian,verbose);
     // fin parsing function protocole 
 
-    let mut tmp = parse_source_line(ls,id_func_proc , size_int, endian);
-    tmp= parse_local_list(ls,tmp , size_int,size_t, endian);
-    println!("tmp avant upvalue {} ",tmp);
-    tmp=parse_upvalue_list(ls,tmp , size_int,size_t, endian);
-    println!("tmp après upvalue {} ",tmp);
-
+    let mut tmp = parse_source_line(ls,id_func_proc , size_int, endian,verbose);
+    tmp= parse_local_list(ls,tmp , size_int,size_t, endian,verbose);
+    if verbose {
+        println!("tmp avant upvalue {} ",tmp);
+    }
+    tmp=parse_upvalue_list(ls,tmp , size_int,size_t, endian,verbose);
+    if verbose {
+        println!("tmp après upvalue {} ",tmp);
+    }
     tmp
 }
 
-fn parse_source_line(ls : &[u8], begin : usize,size_int : usize,endian:i32) -> usize {
+fn parse_source_line(ls : &[u8], begin : usize,size_int : usize,endian:i32,verbose : bool) -> usize {
     let mut tmp = begin ;
     let mut i = 0;
     let size_source_line;
@@ -537,13 +623,15 @@ fn parse_source_line(ls : &[u8], begin : usize,size_int : usize,endian:i32) -> u
                 None => inst_pos = 0,
             } 
         }
-        println!("instruction numéro {} est positionné à {} ",i,inst_pos);
+        if verbose{
+            println!("instruction numéro {} est positionné à {} ",i,inst_pos);
+        }
         i=i+1;
     }
     tmp
 }
 
-fn parse_local_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endian:i32) -> usize {
+fn parse_local_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endian:i32,verbose : bool) -> usize {
     let mut tmp = begin ;
     let mut i = 0;
     let size_local_list;
@@ -585,7 +673,9 @@ fn parse_local_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endi
             Some(val_titre) => titre = convert_to_chaine(val_titre) ,
             None => println!("No titre"),   
         }
-        println!("valeur du titre : {:?} ",titre);
+        if verbose{
+            println!("valeur du titre : {:?} ",titre);
+        }
         //startpc 
         let inst_pos ;
         tmp_size_list = ls.get(tmp..tmp+size_int);
@@ -603,7 +693,9 @@ fn parse_local_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endi
                 None => inst_pos = 0,
             } 
         }
-        println!("le starpc de la variable locale est {} ",inst_pos);
+        if verbose{
+            println!("le starpc de la variable locale est {} ",inst_pos);
+        }
         //endpc 
         let inst_pos ;
         tmp_size_list = ls.get(tmp..tmp+size_int);
@@ -621,13 +713,15 @@ fn parse_local_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endi
                 None => inst_pos = 0,
             } 
         }
-        println!("le endpc de la la variable locale est {} ",inst_pos);
+        if verbose {
+            println!("le endpc de la la variable locale est {} ",inst_pos);
+        }
         i=i+1;
     }
     tmp
 }
 
-fn parse_upvalue_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endian:i32) -> usize {
+fn parse_upvalue_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endian:i32,verbose : bool) -> usize {
     let mut tmp = begin ;
     let mut i = 0;
     let size_local_list;
@@ -646,10 +740,14 @@ fn parse_upvalue_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,en
         } 
     }
     tmp=tmp+size_int;
-    println!("hey size_upvalue = {} ",size_local_list);
+    if verbose {
+        println!("hey size_upvalue = {} ",size_local_list);
+    }
     while i < size_local_list {
         //string 
-        println!(" i il vaut {} ",i);
+        if verbose {
+            println!(" i il vaut {} ",i);
+        }
         let taille ;
         tmp_size_list = ls.get(tmp..tmp+size_t);
         tmp=tmp+size_t;
@@ -671,7 +769,9 @@ fn parse_upvalue_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,en
             Some(val_titre) => titre = convert_to_chaine(val_titre) ,
             None => println!("No titre"),   
         }
-        println!("valeur du titre : {:?} ",titre);
+        if verbose {
+            println!("valeur du titre : {:?} ",titre);
+        }
         i=i+1;
     }
     tmp
@@ -704,7 +804,7 @@ fn affiche_header(ls :&[u8],verbose : bool)  ->(i32,usize,usize,usize,usize,usiz
 
 // Instuction list
 // Les instructions font 4 bytes = 32 octets (1 bytes = 8 bits = 1 octets)
-fn parse_inst_list(ls : &[u8], begin : usize,size_int : usize,size_inst:usize,endian:i32) -> usize {
+fn parse_inst_list(ls : &[u8], begin : usize,size_int : usize,size_inst:usize,endian:i32,verbose : bool) -> usize {
 
     let mut taille_ls_inst: usize = 0;
     let size_code_inst: Option<&[u8]> = ls.get(begin..begin+size_int);
@@ -717,14 +817,18 @@ fn parse_inst_list(ls : &[u8], begin : usize,size_int : usize,size_inst:usize,en
         },
         None => println!("no Value"),
     }
-    println!("Nombre des inst du code en liste de byte {:?} ",size_code_inst);
+    if verbose {
+        println!("Nombre des inst du code en liste de byte {:?} ",size_code_inst);
+        println!("Nombre des inst du code en entier : {} ",taille_ls_inst); 
+    }
     
-    println!("Nombre des inst du code en entier : {} ",taille_ls_inst); 
     let id_code_inst = begin+size_int;
     let code_inst: Option<&[u8]> = ls.get(id_code_inst..id_code_inst+(taille_ls_inst*size_inst));
-    println!("code value : {:?} ",code_inst);
+    if verbose {
+        println!("code value : {:?} ",code_inst);
+    }
     if let Some(code_inst) = code_inst { // Fait par Copilot  
-        affiche_op_inst(code_inst,taille_ls_inst,endian);
+        affiche_op_inst(code_inst,taille_ls_inst,endian,verbose);
     } else {
         println!("No instructions found");
     }
@@ -737,7 +841,8 @@ fn main() -> io::Result<()> {
     let mut buffer = Vec::new();
     io::copy(&mut file, &mut buffer)?; // en décimal
     file.seek(SeekFrom::Start(0))?;
-    let res=affiche_header(&buffer, true);
+    let verbose = true;
+    let res=affiche_header(&buffer, verbose);
     let endian = res.0;
     let size_int = res.1;
     let size_st = res.2;
@@ -749,14 +854,14 @@ fn main() -> io::Result<()> {
 
     let chunk = buffer.get(12..taille_fichier);
     match chunk {
-        Some(chunk) => println!("chunk : {:?}",chunk),
+        Some(chunk) => {if verbose {println!("chunk : {:?}",chunk)}},
         None => println!("No chunk"),   
     }
     
     let to_name : usize = 12+size_st;
     let size_name = buffer.get(12..to_name);//12+valeur de size_st_op (même -1 pour ignorer le dernier caractère qui vaut 0)
     match size_name {
-        Some(size_name) => println!("size_name : {:?}",size_name),
+        Some(size_name) =>  { if verbose {println!("size_name : {:?}",size_name)}},
         None => println!("No size_name"),   
     }
     let mut size_t_value = 0;
@@ -766,7 +871,9 @@ fn main() -> io::Result<()> {
         None => println!("No size_t_value"),
     }
     
+    if verbose {
     println!("size_t_value : {} ",size_t_value);
+    }
 
     let titre_op = buffer.get(to_name..(to_name+size_t_value));
     let mut titre: Vec<char> = Vec::new();
@@ -774,13 +881,16 @@ fn main() -> io::Result<()> {
         Some(val_titre) => titre = convert_to_chaine(val_titre) ,
         None => println!("No titre"),   
     }
-    println!("valeur du titre : {:?} ",titre);
+    if verbose {
+        println!("valeur du titre : {:?} ",titre);
+    }
+    
 
     let first_line_int = to_name+size_t_value;
     
     let first_line = buffer.get((first_line_int)..(first_line_int+size_int));
     match first_line {
-        Some(value_line) => println!("first_line : {:?}",value_line),
+        Some(value_line) => {if verbose {println!("first_line : {:?}",value_line)}},
         None => println!("No first_line"),   
     }
 
@@ -788,32 +898,46 @@ fn main() -> io::Result<()> {
     
     let last_line = buffer.get((last_line_int)..(last_line_int+size_int));
     match last_line {
-        Some(value_line) => println!("last_line : {:?}",value_line),
+        Some(value_line) => {if verbose{println!("last_line : {:?}",value_line)}},
         None => println!("No last_line"),   
     }
     
     let id_1 = last_line_int+size_int;
 
     let nb_upval = unwrap_to_i32(buffer.get(id_1),-1) as usize;
-    println!("nb_upval : {:?}", nb_upval);
+    if verbose {
+        println!("nb_upval : {:?}", nb_upval);
+    }
+    
 
     let nb_param = unwrap_to_i32(buffer.get(id_1+1),-1) as usize;
-    println!("nb_param : {:?}", nb_param);
+    if verbose {
+        println!("nb_param : {:?}", nb_param);
+    }
+    
 
     let var_flag = unwrap_to_i32(buffer.get(id_1+2),-1) as usize;
-    println!("var_flag : {:?}", var_flag);
+    if verbose {
+        println!("var_flag : {:?}", var_flag);
+    }
+    
 
     let max_stack_sz = unwrap_to_i32(buffer.get(id_1+3),-1) as usize;
-    println!("max_stack_sz : {:?}", max_stack_sz);
+    if verbose {
+        println!("max_stack_sz : {:?}", max_stack_sz);
+    }
     
-    let id_cs = parse_inst_list(&buffer, id_1+4,size_int,size_inst,endian);
     
-    let mut id_func_proc = parse_const_list(&buffer, id_cs,size_int,size_st,endian);
+    let id_cs = parse_inst_list(&buffer, id_1+4,size_int,size_inst,endian,verbose);
+    
+    let mut id_func_proc = parse_const_list(&buffer, id_cs,size_int,size_st,endian,verbose);
 
     // Function protocole 
     //Debut parsing function protocole 
-    println!("debut des fonction protocole = {} ",id_func_proc);
-
+    if verbose {
+        println!("debut des fonction protocole = {} ",id_func_proc);
+    }
+    
     let size_func_proc = buffer.get(id_func_proc..id_func_proc+size_int);
     let mut taille_func_proc = -1;
     match size_func_proc {
@@ -821,17 +945,27 @@ fn main() -> io::Result<()> {
         Some(value_line) => taille_func_proc = i32::from_le_bytes(value_line.try_into().expect("slice with incorrect length")),
         None => println!("no Value"),
     }
-    println!("Nombre des inst du code en liste de byte {:?} ",size_func_proc);
-    
-    println!("Nombre des inst du code en entier : {} ",taille_func_proc);
+    if verbose {
+        println!("Nombre des inst du code en liste de byte {:?} ",size_func_proc);
+        
+        println!("Nombre des inst du code en entier : {} ",taille_func_proc);
+    }
 
-    id_func_proc=parse_func_block(&buffer, id_func_proc+size_int, taille_func_proc , size_int, size_st,size_inst, endian);
+    id_func_proc=parse_func_block(&buffer, id_func_proc+size_int, taille_func_proc , size_int, size_st,size_inst, endian,verbose);
     // fin parsing function protocole 
 
-    let mut tmp = parse_source_line(&buffer,id_func_proc , size_int, endian);
-    tmp= parse_local_list(&buffer,tmp , size_int,size_st, endian);
-    println!("tmp avant upvalue {} ",tmp);
-    tmp=parse_upvalue_list(&buffer,tmp , size_int,size_st, endian);
-    println!("tmp après upvalue {} ",tmp);
+    let mut tmp = parse_source_line(&buffer,id_func_proc , size_int, endian,verbose);
+    tmp= parse_local_list(&buffer,tmp , size_int,size_st, endian,verbose);
+    if verbose {
+        println!("tmp avant upvalue {} ",tmp);
+    }
+    
+    tmp=parse_upvalue_list(&buffer,tmp , size_int,size_st, endian,verbose);
+    if verbose {
+        println!("tmp après upvalue {} ",tmp);
+    }
+    //la VM 
+    init_stack(KB);
+    vm();
     Ok(())
 }
