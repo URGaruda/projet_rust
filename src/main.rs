@@ -1,10 +1,10 @@
 #![allow(warnings)]
-use std::arch::global_asm;
-use std::collections::btree_map::Range;
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom};
 use std::convert::TryInto;
-use std::ops::Add;
+use std::sync::LazyLock;
+use std::ops::{Add, Sub, Mul, Div, Rem};
+use std::collections::{hash_map, HashMap};
 /*
 1ère étape : Parsing du header de luac.out 
 2ème étape : Parsing des function blocks 
@@ -30,7 +30,11 @@ const GB :usize=1024*MB;
 static mut STACK: Registre = Registre{ liste : Vec::new()};
 static mut INSTRUCTION: Vec<(u32,u32,u32,u32)> = Vec::new();
 static mut CONSTANTES: Const_list = Const_list {liste : Vec::new()};
-static mut GLOBAL: Vec<glb_func> =Vec::new();
+static mut GLOBAL_Key: Vec<String> =  Vec::new();
+static mut GLOBAL_Value:Vec<TypeLua> = Vec::new();
+static mut FUNC_BODY: Vec<(u32,u32)> = Vec::new(); //pour le moment on suppose qu'il y a pas de fonction inbriquer 
+static mut FB_POINTER:i32 =0;
+static mut CONST_POINTER:i32 =0;
 static mut PC :i32 = 0;
 
 const OPCODE_NAMES: [&str; 38] = [
@@ -41,6 +45,12 @@ const OPCODE_NAMES: [&str; 38] = [
         "RETURN", "FORLOOP", "FORPREP", "TFORLOOP", "SETLIST", "CLOSE", "CLOSURE",
         "VARARG"
 ];
+#[derive(Debug, Clone)]
+struct Closure {
+    prototype: String,
+    upvalues: Vec<TypeLua>,  
+}
+
 #[derive(Debug, PartialEq)]
 enum type_inst {
     IABC,
@@ -48,13 +58,14 @@ enum type_inst {
     IAsBx,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 enum TypeLua {
     Nil,
     Boolean(bool),
     Number(f64),
     String(String), 
     Primitive(glb_func),
+    Closure(Closure),
 }
 
 
@@ -69,13 +80,69 @@ impl Add for TypeLua { // Merci copilot (sinon j'allais juste créer une fonctio
         }
     }
 }
+impl Sub for TypeLua {
+    type Output = TypeLua;
 
-#[derive(Clone, Copy)]
+    fn sub(self, other: TypeLua) -> TypeLua {
+        match (self, other) {
+            (TypeLua::Number(a), TypeLua::Number(b)) => TypeLua::Number(a - b),
+            _ => TypeLua::Nil, 
+        }
+    }
+}
+impl Mul for TypeLua {
+    type Output = TypeLua;
+
+    fn mul(self, other: TypeLua) -> TypeLua {
+        match (self, other) {
+            (TypeLua::Number(a), TypeLua::Number(b)) => TypeLua::Number(a * b),
+            _ => TypeLua::Nil, 
+        }
+    }
+}
+impl Div for TypeLua {
+    type Output = TypeLua;
+
+    fn div(self, other: TypeLua) -> TypeLua {
+        match (self, other) {
+            (TypeLua::Number(a), TypeLua::Number(b)) => TypeLua::Number(a / b),
+            _ => TypeLua::Nil, 
+        }
+    }
+}
+impl Rem for TypeLua {
+    type Output = TypeLua;
+
+    fn rem(self, other: TypeLua) -> TypeLua {
+        match (self, other) {
+            (TypeLua::Number(a), TypeLua::Number(b)) => TypeLua::Number(a - b),
+            _ => TypeLua::Nil, 
+        }
+    }
+}
+impl TypeLua {
+    fn pow(self,other:TypeLua)-> TypeLua {
+        match (self, other) {
+            (TypeLua::Number(a), TypeLua::Number(b)) => { 
+                let mut res : f64 = 1.0;
+                for i in 0..(b as i64) {
+                    res = res * a ;
+                }
+                TypeLua::Number(res)
+            },
+            _ => TypeLua::Nil, 
+        }
+    }
+}
+
+
+#[derive(Debug, Clone, Copy)]
 enum glb_func {
     print,
     nil,
 }
 
+#[derive(Debug, Clone)]
 struct Registre {
     liste: Vec<TypeLua>,
 }
@@ -90,6 +157,7 @@ impl Registre {
     }
 }
 
+#[derive(Debug, Clone)]
 struct const_type { // représente les constantes qu'on pourras lire du parsing 
     types :i32, // 0 si le type représente un booléen, 1 un entier, 2 un string
     booléen:u8, 
@@ -97,6 +165,7 @@ struct const_type { // représente les constantes qu'on pourras lire du parsing
     chaîne : String,
 }
 
+#[derive(Debug,Clone)]
 struct Const_list {
     liste: Vec<const_type>,
 }
@@ -118,6 +187,12 @@ fn init_stack(taille : usize){
         STACK.liste.push(TypeLua::Nil);
         i=i+1;
     }
+    }
+}
+fn init_Global(){
+    unsafe {
+        GLOBAL_Key.push("print".to_string());
+        GLOBAL_Value.push(TypeLua::Primitive(glb_func::print));
     }
 }
 
@@ -142,72 +217,227 @@ fn primitive_print(var: &TypeLua) {
         TypeLua::Number(val) => println!("{}", val),
         TypeLua::String(val) => println!("{}", val),
         TypeLua::Primitive(_) => println!("<Primitive Function>"),
+        TypeLua::Closure(_) => println!("<Closure Function>"),
+    }
+}
+
+fn simule_hash(var :String)->i32{
+    unsafe{
+    let mut i=0;
+    for elm in &GLOBAL_Key {
+        if *elm==var{
+            return i;
+        }
+        i=i+1;
+    }
+    i
     }
 }
 
 
-fn vm() { // fonction qui va agir de VM pour le bytecode lua 
+fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua 
     unsafe {
-    let mut i = 0;
-    
-    while(i<INSTRUCTION.len()){
-        match INSTRUCTION.get(i) {
+    while(PC<INSTRUCTION.len() as i32){
+        match INSTRUCTION.get(PC as usize) {
             Some(&(opcode,a,b,c)) =>{
 
                 match opcode {
+                    0 => {
+                        STACK.liste[a as usize] = STACK.liste[b as usize].clone();
+                        STACK.liste[b as usize] = TypeLua::Nil ;
+                        PC=PC+1;
+                    }
                     1 => {
                         STACK.liste[a as usize] = const_to_luaType(CONSTANTES.get(b as usize),false);
+                        CONST_POINTER=CONST_POINTER+1;
+                        PC=PC+1;
+                    }
+                    2 => {
+                        STACK.liste[a as usize] = TypeLua::Boolean(b != 0);
+                            if c != 0 {
+                                PC=PC+1; 
+                            }
+                            PC=PC+1;
+                    }
+                    3 => {
+                        for i in a..b {
+                            STACK.liste[i as usize] = TypeLua::Nil;
+                        }
+                        PC=PC+1;
                     }
                     5 => {
-                        STACK.liste[a as usize] = const_to_luaType(CONSTANTES.get(b as usize),true);
+                        let indice = simule_hash(CONSTANTES.get(b as usize).chaîne);
+                        STACK.liste[a as usize] = GLOBAL_Value[indice as usize].clone();
+                        CONST_POINTER=CONST_POINTER+1;
+                        PC=PC+1;
+                    }
+                    7 => {
+                        GLOBAL_Key.push(CONSTANTES.get(b as usize).chaîne.clone());
+                        GLOBAL_Value.push(STACK.liste[a as usize].clone());
+                        PC=PC+1;
                     }
                     12 => {
                         STACK.liste[a as usize] = STACK.liste[b as usize].clone() + STACK.liste[c as usize].clone() ;
+                        PC=PC+1;
+                    }
+                    13 => {
+                        STACK.liste[a as usize] = STACK.liste[b as usize].clone() - STACK.liste[c as usize].clone() ;
+                        PC=PC+1;
+                    }
+                    14 => {
+                        STACK.liste[a as usize] = STACK.liste[b as usize].clone() * STACK.liste[c as usize].clone() ;
+                    }
+                    15 => {
+                        STACK.liste[a as usize] = STACK.liste[b as usize].clone() / STACK.liste[c as usize].clone() ;
+                        PC=PC+1;
+                    }
+                    16 => {
+                        STACK.liste[a as usize] = STACK.liste[b as usize].clone() % STACK.liste[c as usize].clone() ;
+                        PC=PC+1;
+                    }
+                    17 => {
+                        STACK.liste[a as usize] = STACK.liste[b as usize].clone().pow(STACK.liste[c as usize].clone()) ;
+                        PC=PC+1;
+                    }
+                    18 => {
+                        STACK.liste[a as usize] = { match STACK.liste[b as usize] {
+                            TypeLua::Number(val) => TypeLua::Number(-val),
+                            _ => TypeLua::Nil,
+                        }};
+                        PC=PC+1;
+                    }
+                    19 => {
+                        STACK.liste[a as usize] = { match STACK.liste[b as usize] {
+                            TypeLua::Boolean(val) => TypeLua::Boolean(!val),
+                            _ => TypeLua::Nil,
+                        }};
+                        PC=PC+1;
+                    }
+                    21 => {
+                        let mut chaine: String =String::new();
+                        for i in b..=c {
+                            match &STACK.liste[i as usize] {
+                                TypeLua::String(val) => {
+                                    chaine.push_str(&val);
+                                }
+                                _=>{}
+                            }
+                        }
+                        STACK.liste[a as usize] = TypeLua::String((chaine));
+                        PC=PC+1;
+
                     }
                     28 => { //R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
-                        let nb_arg = b-c;
-                        let nb_return = c-1;
+                        let nb_arg: i32 = b as i32 - 1;
+                        let nb_return: i32 = c as i32 -1;
                         let get_fct = STACK.liste[a as usize].clone();
+                        //println!(" get_fct = {:?} avec a = {} ",get_fct,a);
+                        //println!(" stack vaut = {:?} ",STACK);
                         match get_fct {
                             TypeLua::Primitive(primitive) => {
+                                //println!("entre dans la primitive");
                                 match primitive {
                                     glb_func::print => {
+                                        //println!("entre dans le print avec nb_arg = {} ",nb_arg);
                                         let mut j = 0;
-                                        while j < nb_arg{
-                                            primitive_print(&STACK.liste[(a+(j+1)) as usize]);
-                                            j=j+1;
+                                        if nb_arg > 0 {
+                                            while j < nb_arg{
+                                                primitive_print(&STACK.liste[(a as i32 +(j+1)) as usize]); // fct qui doit prendre le paramètre et la primitive pour l'executer et avoir sa valeur de retour (s'il y a )
+                                                j=j+1;
+                                            }
+                                        }else {
+                                            primitive_print(&STACK.liste[(a as i32 +1) as usize]);
                                         }
                                     }
                                     _ => { println!("pas de primitive prévu pour cet instruction")}
                                 }
                             }
-                            _=>{println!(" Tu n'es pas une primitive ")}
+                            TypeLua::Closure(closure) => {
+                                let nb_arg: i32 = b as i32 - 1;
+                                let nb_return: i32 = c as i32 -1;
+                                let indice = FUNC_BODY[FB_POINTER as usize];
+                                let tmp_pc = PC;
+                                PC=indice.0 as i32;
+                                let tmp_const = CONSTANTES.clone();
+                                CONSTANTES.liste = CONSTANTES.liste[CONST_POINTER as usize..CONSTANTES.liste.len()].to_vec();
+                                let tmp_inst = STACK.clone();
+                                STACK=Registre{ liste : Vec::new()};
+                                init_stack(KB);
+                                let mut k = 0;
+                                for i in 1..(nb_arg+1) {
+                                    STACK.liste[k as usize] = tmp_inst.liste[(a as i32 +i) as usize].clone();
+                                    k=k+1;
+                                }
+                                let res = vm();
+                                STACK=tmp_inst.clone();
+                                CONSTANTES=tmp_const.clone();
+                                PC=tmp_pc;
+                                let mut j=a;
+                                if nb_return>0 {
+                                    for i in 0..nb_arg {
+                                    STACK.liste[j as usize] = res[i as usize].clone();
+                                    j=j+1;
+                                    }
+                                }else if nb_return<0 {
+                                    for val in res {
+                                        STACK.liste[j as usize] = val;
+                                        j=j+1;
+                                    }
+                                }
+                                FB_POINTER=FB_POINTER+1;
+                            }
+                            _=>{println!(" Tu n'es pas une primitive/fonction ")}
                         }
+                        PC=PC+1;
                     }
                     30 => {
-                        let nb_arg = b+a-1;
+                        let nb_arg = b-1;
                         let mut return_value: Vec<TypeLua> = Vec::new();
                         let mut j = 0;
                         while j < nb_arg{
                             return_value.push(STACK.liste[(a+j) as usize].clone());
                             j=j+1;
                         }
-                    
+                        return return_value;
+                    }
+                    36 =>{
+                        STACK.liste[a as usize] = TypeLua::Closure(Closure{
+                            prototype :{
+                                match CONSTANTES.liste[b as usize].clone().types {
+                                    2 => CONSTANTES.liste[b as usize].clone().chaîne,
+                                    _ => "Erreur".to_string(),
+                                }
+                            },
+                            upvalues : {
+                                let mut ls:Vec<TypeLua> = Vec::new(); 
+                                let mut i = a ;
+                                while true {
+                                    match STACK.liste[i as usize].clone() {
+                                        TypeLua::Nil => break,
+                                        _=> ls.push(STACK.liste[i as usize].clone()),
+                                    }
+                                    i=i+1;
+                                }
+                                ls
+                            }
+                        });
+                        PC=PC+1;
                     }
                     _ => {
                         println!("Unhandled opcode: {}", opcode);
+                        PC=PC+1;
                     }
 
                 }
             }
             None => {
                 println!("Problème dans la VM");
+                break;
             }
         }
-        i=i+1;
     }
+    return vec![TypeLua::Nil];
     }
-    println!(" Fin du programme ");
 }
 
 const TYPE_OPCODE: [type_inst; 38] = [
@@ -471,7 +701,7 @@ fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,size_t:usize,endi
                 None => println!("No titre"),   
             }
             if verbose{
-                println!("valeur du titre : {:?} ",titre);
+                println!("valeur constante string : {:?} ",titre);
             }
             unsafe {
                 CONSTANTES.liste.push(const_type {
@@ -491,6 +721,9 @@ fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,size_t:usize,endi
 
 fn parse_func_block(ls : &[u8], begin : usize,taille : i32,size_int : usize,size_t:usize,size_inst:usize,endian:i32,verbose : bool) -> usize {
     if taille <= 0{return begin;}
+    unsafe {
+    let deb_inst_func_block = INSTRUCTION.len() as u32;
+    if verbose {println!("Into func block");}
     let to_name = begin+size_t;
     let size_name = ls.get(begin..to_name);//12+valeur de size_st_op (même -1 pour ignorer le dernier caractère qui vaut 0)
     match size_name {
@@ -583,8 +816,12 @@ fn parse_func_block(ls : &[u8], begin : usize,taille : i32,size_int : usize,size
     tmp=parse_upvalue_list(ls,tmp , size_int,size_t, endian,verbose);
     if verbose {
         println!("tmp après upvalue {} ",tmp);
+        println!("Out func block")
     }
+    let fin_inst_func_block: u32 = INSTRUCTION.len() as u32;
+    FUNC_BODY.push((deb_inst_func_block,fin_inst_func_block)); //renseigne le debut et la fin des instructions pour l'appel de la fonction 
     tmp
+    }  
 }
 
 fn parse_source_line(ls : &[u8], begin : usize,size_int : usize,endian:i32,verbose : bool) -> usize {
@@ -674,7 +911,7 @@ fn parse_local_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endi
             None => println!("No titre"),   
         }
         if verbose{
-            println!("valeur du titre : {:?} ",titre);
+            println!("nom variable local  : {:?} ",titre);
         }
         //startpc 
         let inst_pos ;
@@ -770,7 +1007,7 @@ fn parse_upvalue_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,en
             None => println!("No titre"),   
         }
         if verbose {
-            println!("valeur du titre : {:?} ",titre);
+            println!("nom de l'upvalue : {:?} ",titre);
         }
         i=i+1;
     }
@@ -837,7 +1074,7 @@ fn parse_inst_list(ls : &[u8], begin : usize,size_int : usize,size_inst:usize,en
 
 
 fn main() -> io::Result<()> {
-    let mut file = File::open("luac_copy.out")?;
+    let mut file = File::open("luac_aff_name.out")?;
     let mut buffer = Vec::new();
     io::copy(&mut file, &mut buffer)?; // en décimal
     file.seek(SeekFrom::Start(0))?;
@@ -964,8 +1201,15 @@ fn main() -> io::Result<()> {
     if verbose {
         println!("tmp après upvalue {} ",tmp);
     }
+    unsafe {
+    if verbose {
+        //println!("List Inst : {:?}",INSTRUCTION);
+        //println!("List Const : {:?}",CONSTANTES);
+    }
+    }
     //la VM 
     init_stack(KB);
+    init_Global();
     vm();
     Ok(())
 }
