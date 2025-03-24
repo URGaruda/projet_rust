@@ -218,7 +218,6 @@ pub fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
     while(PC<INSTRUCTION.len() as i32){
         match INSTRUCTION.get(PC as usize) {
             Some(&(opcode,a,b,c)) =>{
-                //println!("PC = {} , \n  Opcode = {} ,\nConstant list = {:?} .\n",PC,opcode,CONSTANTES);
                 //println!("PC = {} , Opcode = {} ,a = {}, b = {} , c = {} ",PC,opcode,a,b,c);
                 match opcode {
                     0 => {
@@ -228,7 +227,6 @@ pub fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                     }
                     1 => {
                         STACK.liste[a as usize] = const_to_luaType(CONSTANTES.get(b as usize),false);
-                        //println!(" loadk STACK = {:?} ",STACK.liste[0..10].to_vec());
                         CONST_POINTER=CONST_POINTER+1;
                         PC=PC+1;
                     }
@@ -246,7 +244,6 @@ pub fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                         PC=PC+1;
                     }
                     5 => {
-                        //println!(" getglobal CONST = {:?} ",CONSTANTES.liste[0..CONSTANTES.liste.len()].to_vec());
                         let indice = simule_hash(CONSTANTES.get(b as usize).chaîne);
                         if indice == GLOBAL_Key.len() as i32 {
                             GLOBAL_Key.push(CONSTANTES.get(b as usize).chaîne);
@@ -266,12 +263,10 @@ pub fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                         }else{
                             STACK.liste[a as usize] = GLOBAL_Value[indice as usize].clone();
                         }
-                        //println!(" getglobal STACK = {:?} ",STACK.liste[0..10].to_vec());
                         CONST_POINTER=CONST_POINTER+1;
                         PC=PC+1;
                     }
                     7 => {
-                        //println!("constante = {:?} ",CONSTANTES.get(b as usize).chaîne);
                         GLOBAL_Key.push(CONSTANTES.get(b as usize).chaîne.clone());
                         GLOBAL_Value.push(STACK.liste[a as usize].clone());
                         PC=PC+1;
@@ -389,7 +384,6 @@ pub fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                     }
                     21 => {
                         let mut chaine: String =String::new();
-                        //println!(" concat STACK = {:?} ",STACK.liste[0..10].to_vec());
                         for i in b..=c {
                             match &STACK.liste[i as usize] {
                                 TypeLua::String(val) => {
@@ -488,12 +482,10 @@ pub fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                         let nb_arg: i32 = b as i32 - 1;
                         let nb_return: i32 = c as i32 -1;
                         let get_fct = STACK.liste[a as usize].clone();
-                        //println!(" get_fct = {:?} avec a = {} ",get_fct,a);
                         match get_fct {
                             TypeLua::Primitive(primitive) => {
                                 match primitive {
                                     glb_func::print => {
-                                        //println!("entre dans le print avec nb_arg = {} \n et STACK = {:?} ",nb_arg,STACK.liste[0..10].to_vec());
                                         let mut j = 0;
                                         if nb_arg > 0 {
                                             while j < nb_arg{
@@ -509,7 +501,6 @@ pub fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                                 print!("\n");
                             }
                             TypeLua::Closure(closure) => {
-                                //println!("Closure : {:?} ",closure);
                                 let indice = FUNC_BODY[FB_POINTER as usize];
                                 let tmp_pc = PC;
                                 PC=indice.0 as i32;
@@ -523,7 +514,6 @@ pub fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                                     STACK.liste[k as usize] = tmp_inst.liste[(a as i32 +i) as usize].clone();
                                     k=k+1;
                                 }
-                                //println!(" stack : {:?} ",STACK.liste[0..10].to_vec());
                                 let res = vm();
                                 STACK=tmp_inst.clone();
                                 CONSTANTES=tmp_const.clone();
