@@ -1,4 +1,8 @@
 #![allow(warnings)]
+mod virtual_machine;
+use crate::virtual_machine::{KB,MB,GB,STACK,INSTRUCTION,CONSTANTES,GLOBAL_Key,GLOBAL_Value,FUNC_BODY,FB_POINTER,CONST_POINTER,PC,TYPE_OPCODE, OPCODE_NAMES};
+use crate::virtual_machine::{Closure,type_inst,TypeLua,glb_func,Registre,const_type,Const_list};
+use crate::virtual_machine::{init_stack,init_Global,str_to_glb,const_to_luaType,primitive_print,simule_hash,vm};
 use std::env;
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom};
@@ -14,661 +18,6 @@ use std::collections::{hash_map, HashMap};
 5ème étape : Gestion de la primitive print 
 6ème étape : Ajout d'autres primitives (Optionnel) 
 */
-/*
-En gros ce que tu vas devoir faire c'est une pile pour empiler,dépiler les instructions,constantes que tu liras pour faire leurs executions
-Regarde le td pour des exemples 
-registres sont des places de la pile dans le contexte d'execution d'une fonction réfère toi à tes souvenirs et à la photo
-Prochaine étape : créer un interpreteur pour les instructions 
-*/
-
-
-
-const KB :usize=1024;
-const MB :usize=1024*KB;
-const GB :usize=1024*MB;
-
-
-static mut STACK: Registre = Registre{ liste : Vec::new()};
-static mut INSTRUCTION: Vec<(u32,u32,u32,u32)> = Vec::new();
-static mut CONSTANTES: Const_list = Const_list {liste : Vec::new()};
-static mut GLOBAL_Key: Vec<String> =  Vec::new();
-static mut GLOBAL_Value:Vec<TypeLua> = Vec::new();
-static mut FUNC_BODY: Vec<(u32,u32)> = Vec::new(); //pour le moment on suppose qu'il y a pas de fonction inbriquer 
-static mut FB_POINTER:i32 =0;
-static mut CONST_POINTER:i32 =0;
-static mut PC :i32 = 0;
-
-const OPCODE_NAMES: [&str; 38] = [
-        "MOVE", "LOADK", "LOADBOOL", "LOADNIL", "GETUPVAL", "GETGLOBAL",
-        "GETTABLE", "SETGLOBAL", "SETUPVAL", "SETTABLE", "NEWTABLE", "SELF",
-        "ADD", "SUB", "MUL", "DIV", "MOD", "POW", "UNM", "NOT", "LEN",
-        "CONCAT", "JMP", "EQ", "LT", "LE", "TEST", "TESTSET", "CALL", "TAILCALL",
-        "RETURN", "FORLOOP", "FORPREP", "TFORLOOP", "SETLIST", "CLOSE", "CLOSURE",
-        "VARARG"
-];
-#[derive(Debug, Clone, PartialEq)]
-struct Closure {
-    prototype: String,
-    upvalues: Vec<TypeLua>,  
-}
-
-#[derive(Debug, PartialEq)]
-enum type_inst {
-    IABC,
-    IABx,
-    IAsBx,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum TypeLua {
-    Nil,
-    Boolean(bool),
-    Number(f64),
-    String(String), 
-    Primitive(glb_func),
-    Closure(Closure),
-}
-
-impl PartialOrd for TypeLua {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        match (self, other) {
-            (TypeLua::Number(a), TypeLua::Number(b)) => a.partial_cmp(b),
-            (TypeLua::String(a), TypeLua::String(b)) => a.partial_cmp(b),
-            _ => None, // Return None for unsupported comparisons
-        }
-    }
-}
-
-
-
-impl Add for TypeLua { // Merci copilot (sinon j'allais juste créer une fonction add(typeLua,typeLua))
-    type Output = TypeLua;
-
-    fn add(self, other: TypeLua) -> TypeLua {
-        match (self, other) {
-            (TypeLua::Number(a), TypeLua::Number(b)) => TypeLua::Number(a + b),
-            _ => TypeLua::Nil, // Return Nil for unsupported operations
-        }
-    }
-}
-impl Sub for TypeLua {
-    type Output = TypeLua;
-
-    fn sub(self, other: TypeLua) -> TypeLua {
-        match (self, other) {
-            (TypeLua::Number(a), TypeLua::Number(b)) => TypeLua::Number(a - b),
-            _ => TypeLua::Nil, 
-        }
-    }
-}
-impl Mul for TypeLua {
-    type Output = TypeLua;
-
-    fn mul(self, other: TypeLua) -> TypeLua {
-        match (self, other) {
-            (TypeLua::Number(a), TypeLua::Number(b)) => TypeLua::Number(a * b),
-            _ => TypeLua::Nil, 
-        }
-    }
-}
-impl Div for TypeLua {
-    type Output = TypeLua;
-
-    fn div(self, other: TypeLua) -> TypeLua {
-        match (self, other) {
-            (TypeLua::Number(a), TypeLua::Number(b)) => TypeLua::Number(a / b),
-            _ => TypeLua::Nil, 
-        }
-    }
-}
-impl Rem for TypeLua {
-    type Output = TypeLua;
-
-    fn rem(self, other: TypeLua) -> TypeLua {
-        match (self, other) {
-            (TypeLua::Number(a), TypeLua::Number(b)) => TypeLua::Number(a - b),
-            _ => TypeLua::Nil, 
-        }
-    }
-}
-impl TypeLua {
-    fn pow(self,other:TypeLua)-> TypeLua {
-        match (self, other) {
-            (TypeLua::Number(a), TypeLua::Number(b)) => { 
-                TypeLua::Number(a.powf(b))
-            },
-            _ => TypeLua::Nil, 
-        }
-    }
-}
-
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum glb_func {
-    print,
-    nil,
-}
-
-#[derive(Debug, Clone)]
-struct Registre {
-    liste: Vec<TypeLua>,
-}
-
-impl Registre {
-    fn get(&self,index :usize) -> TypeLua{
-        match self.liste.get(index) {
-            Some(value) => value.clone(),
-            None => TypeLua::Nil,
-            
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct const_type { // représente les constantes qu'on pourras lire du parsing 
-    types :i32, // 0 si le type représente un booléen, 1 un entier, 2 un string
-    booléen:u8, 
-    entier :f64,
-    chaîne : String,
-}
-
-#[derive(Debug,Clone)]
-struct Const_list {
-    liste: Vec<const_type>,
-}
- 
-impl Const_list {
-    fn get(&self,index :usize) -> const_type{
-        match self.liste.get(index) {
-            Some(value) => const_type { types: (value.types), booléen: (value.booléen), entier: (value.entier), chaîne: (value.chaîne.clone()) },
-            None => const_type { types: (-1), booléen: (0), entier: (0.0), chaîne: String::new() },
-            
-        }
-    }
-}
-
-fn init_stack(taille : usize){
-    unsafe {
-    let mut i = 0;
-    while i < taille{
-        STACK.liste.push(TypeLua::Nil);
-        i=i+1;
-    }
-    }
-}
-fn init_Global(){
-    unsafe {
-        GLOBAL_Key.push("print".to_string());
-        GLOBAL_Value.push(TypeLua::Primitive(glb_func::print));
-    }
-}
-
-fn str_to_glb(var : String) -> glb_func {
-    if var.eq("print") {glb_func::print}else{glb_func::nil}
-}
-
-fn const_to_luaType(var : const_type,isPrimitive : bool) -> TypeLua {
-    match var.types {
-        0 => TypeLua::Boolean(if var.booléen==0{true}else{false}),
-        1 => TypeLua::Number((var.entier)),
-        2 => if isPrimitive {TypeLua::Primitive((str_to_glb(var.chaîne)))}else{TypeLua::String(var.chaîne)}
-        _ => TypeLua::Nil,
-        
-    }
-}
-
-fn primitive_print(var: &TypeLua) {
-    match var {
-        TypeLua::Nil => println!("Nil"),
-        TypeLua::Boolean(val) => println!("{}", val),
-        TypeLua::Number(val) => println!("{}", val),
-        TypeLua::String(val) => println!("{}", val),
-        TypeLua::Primitive(_) => println!("<Primitive Function>"),
-        TypeLua::Closure(_) => println!("<Closure Function>"),
-    }
-}
-
-fn simule_hash(var :String)->i32{
-    unsafe{
-    let mut i=0;
-    for elm in &GLOBAL_Key {
-        if *elm==var{
-            return i;
-        }
-        i=i+1;
-    }
-    i
-    }
-}
-
-
-fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua 
-    unsafe {
-    while(PC<INSTRUCTION.len() as i32){
-        match INSTRUCTION.get(PC as usize) {
-            Some(&(opcode,a,b,c)) =>{
-                //println!("PC = {} , \n  Opcode = {} ,\nConstant list = {:?} .\n",PC,opcode,CONSTANTES);
-                //println!("PC = {} , Opcode = {} ,a = {}, b = {} , c = {} ",PC,opcode,a,b,c);
-                match opcode {
-                    0 => {
-                        STACK.liste[a as usize] = STACK.liste[b as usize].clone();
-                        STACK.liste[b as usize] = TypeLua::Nil ;
-                        PC=PC+1;
-                    }
-                    1 => {
-                        STACK.liste[a as usize] = const_to_luaType(CONSTANTES.get(b as usize),false);
-                        //println!(" loadk STACK = {:?} ",STACK.liste[0..10].to_vec());
-                        CONST_POINTER=CONST_POINTER+1;
-                        PC=PC+1;
-                    }
-                    2 => {
-                        STACK.liste[a as usize] = TypeLua::Boolean(b != 0);
-                            if c != 0 {
-                                PC=PC+1; 
-                            }
-                            PC=PC+1;
-                    }
-                    3 => {
-                        for i in a..b {
-                            STACK.liste[i as usize] = TypeLua::Nil;
-                        }
-                        PC=PC+1;
-                    }
-                    5 => {
-                        //println!(" getglobal CONST = {:?} ",CONSTANTES.liste[0..CONSTANTES.liste.len()].to_vec());
-                        let indice = simule_hash(CONSTANTES.get(b as usize).chaîne);
-                        if indice == GLOBAL_Key.len() as i32 {
-                            GLOBAL_Key.push(CONSTANTES.get(b as usize).chaîne);
-                            GLOBAL_Value.push(TypeLua::Closure(Closure { prototype: CONSTANTES.get(b as usize).chaîne, upvalues : {
-                                let mut ls:Vec<TypeLua> = Vec::new(); 
-                                let mut i = a ;
-                                while true {
-                                    match STACK.liste[i as usize].clone() {
-                                        TypeLua::Nil => break,
-                                        _=> ls.push(STACK.liste[i as usize].clone()),
-                                    }
-                                    i=i+1;
-                                }
-                                ls
-                            } }));
-                            STACK.liste[a as usize] = GLOBAL_Value[indice as usize].clone();
-                        }else{
-                            STACK.liste[a as usize] = GLOBAL_Value[indice as usize].clone();
-                        }
-                        //println!(" getglobal STACK = {:?} ",STACK.liste[0..10].to_vec());
-                        CONST_POINTER=CONST_POINTER+1;
-                        PC=PC+1;
-                    }
-                    7 => {
-                        //println!("constante = {:?} ",CONSTANTES.get(b as usize).chaîne);
-                        GLOBAL_Key.push(CONSTANTES.get(b as usize).chaîne.clone());
-                        GLOBAL_Value.push(STACK.liste[a as usize].clone());
-                        PC=PC+1;
-                    }
-                    12 => {
-                        if b < 256 {
-                            if c < 256 {
-                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() + STACK.liste[c as usize].clone() ;
-                            }else{
-                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() + (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }else{
-                            if c < 256 {
-                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) + STACK.liste[c as usize].clone() ;
-                            }else{
-                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) + (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }
-                        PC=PC+1;
-                    }
-                    13 => {
-                        if b < 256 {
-                            if c < 256 {
-                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() - STACK.liste[c as usize].clone() ;
-                            }else{
-                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() - (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }else{
-                            if c < 256 {
-                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) - STACK.liste[c as usize].clone() ;
-                            }else{
-                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) - (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }
-                        PC=PC+1;
-                    }
-                    14 => {
-                        if b < 256 {
-                            if c < 256 {
-                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() * STACK.liste[c as usize].clone() ;
-                            }else{
-                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() * (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }else{
-                            if c < 256 {
-                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) * STACK.liste[c as usize].clone() ;
-                            }else{
-                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) * (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }
-                        PC=PC+1;
-                    }
-                    15 => {
-                        if b < 256 {
-                            if c < 256 {
-                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() / STACK.liste[c as usize].clone() ;
-                            }else{
-                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() / (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }else{
-                            if c < 256 {
-                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) / STACK.liste[c as usize].clone() ;
-                            }else{
-                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) / (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }STACK.liste[a as usize] = STACK.liste[b as usize].clone() / STACK.liste[c as usize].clone() ;
-                        PC=PC+1;
-                    }
-                    16 => {
-                        if b < 256 {
-                            if c < 256 {
-                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() % STACK.liste[c as usize].clone() ;
-                            }else{
-                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() % (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }else{
-                            if c < 256 {
-                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) % STACK.liste[c as usize].clone() ;
-                            }else{
-                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) % (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }
-                        PC=PC+1;
-                    }
-                    17 => {
-                        if b < 256 {
-                            if c < 256 {
-                                STACK.liste[a as usize] = STACK.liste[b as usize].clone().pow(STACK.liste[c as usize].clone()) ;
-                            }else{
-                                STACK.liste[a as usize] = STACK.liste[b as usize].clone().pow(const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }else{
-                            if c < 256 {
-                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false).pow(STACK.liste[c as usize].clone()) ;
-                            }else{
-                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false).pow(const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }
-
-                        PC=PC+1;
-                    }
-                    18 => {
-                        STACK.liste[a as usize] = { match STACK.liste[b as usize] {
-                            TypeLua::Number(val) => TypeLua::Number(-val),
-                            _ => TypeLua::Nil,
-                        }};
-                        PC=PC+1;
-                    }
-                    19 => {
-                        STACK.liste[a as usize] = { match STACK.liste[b as usize] {
-                            TypeLua::Boolean(val) => TypeLua::Boolean(!val),
-                            _ => TypeLua::Nil,
-                        }};
-                        PC=PC+1;
-                    }
-                    21 => {
-                        let mut chaine: String =String::new();
-                        //println!(" concat STACK = {:?} ",STACK.liste[0..10].to_vec());
-                        for i in b..=c {
-                            match &STACK.liste[i as usize] {
-                                TypeLua::String(val) => {
-                                    chaine.push_str(&val);
-                                }
-                                _=>{}
-                            }
-                        }
-                        STACK.liste[a as usize] = TypeLua::String((chaine));
-                        PC=PC+1;
-
-                    }
-                    22 => {
-                        PC=PC+1+b as i32;
-                    }
-                    23 => {
-                        let verif:bool;
-                        if b < 256 {
-                            if c < 256 {
-                                verif = STACK.liste[b as usize].clone() == (STACK.liste[c as usize].clone()) ;
-                            }else{
-                                verif = STACK.liste[b as usize].clone() == (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }else{
-                            if c < 256 {
-                                verif = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) == (STACK.liste[c as usize].clone()) ;
-                            }else{
-                                verif = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) == (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }
-                        if verif {
-                            if a==1 {
-                                PC=PC+1;
-                            }
-                        }else{
-                            if a==0 {
-                                PC=PC+1;
-                            }
-                        }
-                        
-                        PC=PC+1;
-                    }
-                    24 => {
-                        let verif:bool;
-                        if b < 256 {
-                            if c < 256 {
-                                verif = STACK.liste[b as usize].clone() < (STACK.liste[c as usize].clone()) ;
-                            }else{
-                                verif = STACK.liste[b as usize].clone() < (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }else{
-                            if c < 256 {
-                                verif = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) < (STACK.liste[c as usize].clone()) ;
-                            }else{
-                                verif = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) < (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }
-                        if verif {
-                            if a==1 {
-                                PC=PC+1;
-                            }
-                        }else{
-                            if a==0 {
-                                PC=PC+1;
-                            }
-                        }
-                        PC=PC+1;
-                    }
-                    25 => {
-                        let verif:bool;
-                        if b < 256 {
-                            if c < 256 {
-                                verif = STACK.liste[b as usize].clone() <= (STACK.liste[c as usize].clone()) ;
-                            }else{
-                                verif = STACK.liste[b as usize].clone() <= (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }else{
-                            if c < 256 {
-                                verif = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) <= (STACK.liste[c as usize].clone()) ;
-                            }else{
-                                verif = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) <= (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
-                            }
-                        }
-                        if verif {
-                            if a==1 {
-                                PC=PC+1;
-                            }
-                        }else{
-                            if a==0 {
-                                PC=PC+1;
-                            }
-                        }
-                        PC=PC+1;
-                    }
-                    28 => { //R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
-                        let nb_arg: i32 = b as i32 - 1;
-                        let nb_return: i32 = c as i32 -1;
-                        let get_fct = STACK.liste[a as usize].clone();
-                        //println!(" get_fct = {:?} avec a = {} ",get_fct,a);
-                        match get_fct {
-                            TypeLua::Primitive(primitive) => {
-                                //println!("entre dans la primitive");
-                                match primitive {
-                                    glb_func::print => {
-                                        //println!("entre dans le print avec nb_arg = {} \n et STACK = {:?} ",nb_arg,STACK.liste[0..10].to_vec());
-                                        let mut j = 0;
-                                        if nb_arg > 0 {
-                                            while j < nb_arg{
-                                                primitive_print(&STACK.liste[(a as i32 +(j+1)) as usize]); // fct qui doit prendre le paramètre et la primitive pour l'executer et avoir sa valeur de retour (s'il y a )
-                                                j=j+1;
-                                            }
-                                        }else {
-                                            primitive_print(&STACK.liste[(a as i32 +1) as usize]);
-                                        }
-                                    }
-                                    _ => { println!("pas de primitive prévu pour cet instruction {:?}",get_fct )}
-                                }
-                            }
-                            TypeLua::Closure(closure) => {
-                                //println!("Closure : {:?} ",closure);
-                                let nb_arg: i32 = b as i32 - 1;
-                                let nb_return: i32 = c as i32 -1;
-                                let indice = FUNC_BODY[FB_POINTER as usize];
-                                let tmp_pc = PC;
-                                PC=indice.0 as i32;
-                                let tmp_const = CONSTANTES.clone();
-                                CONSTANTES.liste = CONSTANTES.liste[CONST_POINTER as usize..CONSTANTES.liste.len()].to_vec();
-                                let tmp_inst = STACK.clone();
-                                STACK=Registre{ liste : Vec::new()};
-                                init_stack(KB);
-                                let mut k = 0;
-                                for i in 1..(nb_arg+1) {
-                                    STACK.liste[k as usize] = tmp_inst.liste[(a as i32 +i) as usize].clone();
-                                    k=k+1;
-                                }
-                                //println!(" stack : {:?} ",STACK.liste[0..10].to_vec());
-                                let res = vm();
-                                STACK=tmp_inst.clone();
-                                CONSTANTES=tmp_const.clone();
-                                PC=tmp_pc;
-                                let mut j=a;
-                                if nb_return>0 {
-                                    for i in 0..nb_arg {
-                                    STACK.liste[j as usize] = res[i as usize].clone();
-                                    j=j+1;
-                                    }
-                                }else if nb_return<0 {
-                                    for val in res {
-                                        STACK.liste[j as usize] = val;
-                                        j=j+1;
-                                    }
-                                }
-                                FB_POINTER=FB_POINTER+1;
-                            }
-                            _=>{println!(" Tu n'es pas une primitive/fonction ")}
-                        }
-                        PC=PC+1;
-                    }
-                    30 => {
-                        let nb_arg = b-1;
-                        let mut return_value: Vec<TypeLua> = Vec::new();
-                        let mut j = 0;
-                        while j < nb_arg{
-                            return_value.push(STACK.liste[(a+j) as usize].clone());
-                            j=j+1;
-                        }
-                        return return_value;
-                    }
-                    36 =>{
-                        STACK.liste[a as usize] = TypeLua::Closure(Closure{
-                            prototype :{
-                                match CONSTANTES.liste[b as usize].clone().types {
-                                    2 => CONSTANTES.liste[b as usize].clone().chaîne,
-                                    _ => "Erreur".to_string(),
-                                }
-                            },
-                            upvalues : {
-                                let mut ls:Vec<TypeLua> = Vec::new(); 
-                                let mut i = a ;
-                                while true {
-                                    match STACK.liste[i as usize].clone() {
-                                        TypeLua::Nil => break,
-                                        _=> ls.push(STACK.liste[i as usize].clone()),
-                                    }
-                                    i=i+1;
-                                }
-                                ls
-                            }
-                        });
-                        PC=PC+1;
-                    }
-                    _ => {
-                        println!("Unhandled opcode: {}", opcode);
-                        PC=PC+1;
-                    }
-
-                }
-            }
-            None => {
-                println!("Problème dans la VM");
-                break;
-            }
-        }
-    }
-    return vec![TypeLua::Nil];
-    }
-}
-
-const TYPE_OPCODE: [type_inst; 38] = [
-    type_inst::IABC,   // MOVE 0
-    type_inst::IABx,   // LOADK 1
-    type_inst::IABC,   // LOADBOOL 2
-    type_inst::IABC,   // LOADNIL 3
-    type_inst::IABC,   // GETUPVAL 4
-    type_inst::IABx,   // GETGLOBAL 5
-    type_inst::IABC,   // GETTABLE 6
-    type_inst::IABx,   // SETGLOBAL 7
-    type_inst::IABC,   // SETUPVAL 8
-    type_inst::IABC,   // SETTABLE 9
-    type_inst::IABC,   // NEWTABLE 10
-    type_inst::IABC,   // SELF 11
-    type_inst::IABC,   // ADD 12
-    type_inst::IABC,   // SUB 13
-    type_inst::IABC,   // MUL 14
-    type_inst::IABC,   // DIV 15
-    type_inst::IABC,   // MOD 16
-    type_inst::IABC,   // POW 17
-    type_inst::IABC,   // UNM 18
-    type_inst::IABC,   // NOT 19
-    type_inst::IABC,   // LEN 20
-    type_inst::IABC,   // CONCAT 21
-    type_inst::IAsBx,  // JMP 22
-    type_inst::IABC,   // EQ 23
-    type_inst::IABC,   // LT 24
-    type_inst::IABC,   // LE 25
-    type_inst::IABC,   // TEST 26
-    type_inst::IABC,   // TESTSET 27
-    type_inst::IABC,   // CALL 28
-    type_inst::IABC,   // TAILCALL 29
-    type_inst::IABC,   // RETURN 30
-    type_inst::IAsBx,  // FORLOOP 31
-    type_inst::IAsBx,  // FORPREP 32
-    type_inst::IABC,   // TFORLOOP 33
-    type_inst::IABC,   // SETLIST 34
-    type_inst::IABC,   // CLOSE 35
-    type_inst::IABx,   // CLOSURE 36
-    type_inst::IABC,   // VARARG 37
-];
-
-
 fn get_bits(num: u32, p: u32, s: u32) -> u32 {
     (num >> p) & ((1 << s) - 1)
 }
@@ -694,15 +43,15 @@ fn affiche_op_inst(tab: &[u8], taille_inst: usize, endian: i32,verbose : bool) {
             println!("Instruction {}: Opcode : {} ({})", i, opcode, OPCODE_NAMES[opcode as usize]);
         }
         let tp = &TYPE_OPCODE[opcode as usize];
-        let a = get_bits(data, 6, 8);
-        let b;
-        let c;
+        let a = get_bits(data, 6, 8) as i32;
+        let b: i32;
+        let c: i32;
         if verbose {
             println!(" tp = {:?} ",tp);
         }
         if *tp == type_inst::IABC {
-            b=get_bits(data, 23, 9);
-            c=get_bits(data, 14, 9);
+            b=get_bits(data, 23, 9) as i32;
+            c=get_bits(data, 14, 9) as i32;
             if verbose {
                 println!("a = {} , b = {} , c = {} ",a,b,c);
             }
@@ -710,7 +59,7 @@ fn affiche_op_inst(tab: &[u8], taille_inst: usize, endian: i32,verbose : bool) {
                 INSTRUCTION.push((opcode, a, b, c));
             }
         }else if *tp == type_inst::IABx {
-            b=get_bits(data, 14, 18);
+            b=get_bits(data, 14, 18) as i32;
             if verbose {
                 println!("a = {} , b = {}",a,b);
             }
@@ -718,7 +67,7 @@ fn affiche_op_inst(tab: &[u8], taille_inst: usize, endian: i32,verbose : bool) {
                 INSTRUCTION.push((opcode, a, b, 0));
             }
         }else{
-            b=get_bits(data, 14, 18)-131071;
+            b=get_bits(data, 14, 18) as i32 -131071;
             if verbose{
                 println!("a = {} , b = {}",a,b);
             }
@@ -739,14 +88,12 @@ fn unwrap_to_i32 (val :Option<&u8>,default:i32) -> i32 {
         None => default,
     }
 }
-
 fn get_u8(val: Option<&u8>, default: u8) -> Vec<u8> {
     match val {
         Some(val) => vec![*val],
         None => vec![default],
     }
 }
-
 fn byte_to_number (val : &[u8]) -> i128 { // faudrait penser à mettre l'option little ou big endian 
     let mut i: usize =0 ;
     let mut res: i128=0;
@@ -759,7 +106,6 @@ fn byte_to_number (val : &[u8]) -> i128 { // faudrait penser à mettre l'option 
     }
     res
 }
-
 fn byte_to_number_be(val: &[u8]) -> i128 { 
     let mut res: i128 = 0;
     for (i, &tmp) in val.iter().rev().enumerate() {
@@ -767,7 +113,6 @@ fn byte_to_number_be(val: &[u8]) -> i128 {
     }
     res
 }
-
 fn convert_to_chaine(ls : &[u8]) -> Vec<char> {
     let mut res: Vec<char> = Vec::new();
     for &var in ls {
@@ -775,7 +120,6 @@ fn convert_to_chaine(ls : &[u8]) -> Vec<char> {
     }
     res
 }
-
 fn charVec_to_string(vecteur : Vec<char>) -> String {
     let mut res : String = String::new();
     for var in vecteur{
@@ -791,7 +135,6 @@ fn parse_const_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endi
     let mut taille_ls_const: usize = 0;
     let u8_const_ls: Option<&[u8]> = ls.get(begin..begin+size_int);
     match u8_const_ls {
-        //Some(value_line) => taille_ls_const= byte_to_number(value_line) as usize,
         Some(value_line) => if endian == 1 {
             taille_ls_const = u32::from_le_bytes(value_line.try_into().expect("slice with incorrect length")) as usize
         }else{
@@ -841,7 +184,7 @@ fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,size_t:usize,endi
             
             tmp=tmp+1;
         }
-        if type_const == 3 { // Lua Number 8 bytes // obtenue par ChatGPT 
+        if type_const == 3 { // Lua Number 8 bytes // obtenue grace à Copilot 
             let mut lua_numb: f64=-1.0;
             if let Some(gt_bytes) = ls.get(tmp..tmp+8) {
                 if endian==1 {
@@ -870,7 +213,6 @@ fn affiche_const_list(ls : &[u8], begin : usize,taille : usize,size_t:usize,endi
             tmp=tmp+size_t;
             let mut size_t_value = 0;
             match size_name {
-                //Some(name_value) => size_t_value = usize::from_le_bytes(name_value.try_into().expect("Erreur de conversion")), // la fonction a été pris par ChatGpt
                 Some(name_value) => {if endian == 1 
                                             {size_t_value = byte_to_number(name_value) as usize} 
                                             else {
@@ -912,18 +254,16 @@ fn parse_func_block(ls : &[u8], begin : usize,taille : i32,size_int : usize,size
     let deb_inst_func_block = INSTRUCTION.len() as u32;
     if verbose {println!("Into func block");}
     let to_name = begin+size_t;
-    let size_name = ls.get(begin..to_name);//12+valeur de size_st_op (même -1 pour ignorer le dernier caractère qui vaut 0)
+    let size_name = ls.get(begin..to_name);
     match size_name {
         Some(size_name) => {if verbose {println!("size__func_name : {:?}",size_name)}},
         None => println!("No size_func_name"),   
     }
     let mut size_t_value = 0;
     match size_name {
-        //Some(name_value) => size_t_value = usize::from_le_bytes(name_value.try_into().expect("Erreur de conversion")), // la fonction a été pris par ChatGpt
         Some(name_value) => size_t_value = byte_to_number(name_value) as usize ,
         None => println!("No size_t_func_value"),
     }
-    
     if verbose{
         println!("size_t_func_value : {} ",size_t_value);
     }
@@ -982,7 +322,6 @@ fn parse_func_block(ls : &[u8], begin : usize,taille : i32,size_int : usize,size
     let size_func_proc = ls.get(id_func_proc..id_func_proc+size_int);
     let mut taille_func_proc = -1;
     match size_func_proc {
-        //Some(value_line) => taille_inst= byte_to_number(value_line) as usize,
         Some(value_line) => taille_func_proc = i32::from_le_bytes(value_line.try_into().expect("slice with incorrect length")),
         None => println!("no Value"),
     }
@@ -1018,13 +357,11 @@ fn parse_source_line(ls : &[u8], begin : usize,size_int : usize,endian:i32,verbo
     let mut tmp_size_list = ls.get(begin..begin+size_int);
     if endian == 1 {
         match tmp_size_list {
-            //Some(value_int) => size_source_line= usize::from_le_bytes(value_int.try_into().expect("slice with incorrect length")),
             Some(value_int) => size_source_line= byte_to_number(value_int) as usize,
             None => size_source_line = 0,
         }
     }else{
         match tmp_size_list {
-            //Some(value_int) => size_source_line = usize::from_be_bytes(value_int.try_into().expect("slice with incorrect length")),
             Some(value_int) => size_source_line= byte_to_number_be(value_int) as usize,
             None => size_source_line = 0,
         } 
@@ -1036,13 +373,11 @@ fn parse_source_line(ls : &[u8], begin : usize,size_int : usize,endian:i32,verbo
         tmp=tmp+size_int;
         if endian == 1 {
             match tmp_size_list {
-                //Some(value_int) => inst_pos= usize::from_le_bytes(value_int.try_into().expect("slice with incorrect length")),
                 Some(value_int) => inst_pos= byte_to_number(value_int) as usize,
                 None => inst_pos = 0,
             }
         }else{
             match tmp_size_list {
-                //Some(value_int) => inst_pos = usize::from_be_bytes(value_int.try_into().expect("slice with incorrect length")),
                 Some(value_int) => inst_pos= byte_to_number_be(value_int) as usize,
                 None => inst_pos = 0,
             } 
@@ -1062,13 +397,11 @@ fn parse_local_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endi
     let mut tmp_size_list = ls.get(begin..begin+size_int);
     if endian == 1 {
         match tmp_size_list {
-            //Some(value_int) => size_local_list= usize::from_le_bytes(value_int.try_into().expect("slice with incorrect length")),
             Some(value_int) => size_local_list= byte_to_number(value_int) as usize,
             None => size_local_list = 0,
         }
     }else{
         match tmp_size_list {
-            //Some(value_int) => size_local_list = usize::from_be_bytes(value_int.try_into().expect("slice with incorrect length")),
             Some(value_int) => size_local_list= byte_to_number_be(value_int) as usize,
             None => size_local_list = 0,
         } 
@@ -1106,13 +439,11 @@ fn parse_local_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endi
         tmp=tmp+size_int;
         if endian == 1 {
             match tmp_size_list {
-                //Some(value_int) => inst_pos= usize::from_le_bytes(value_int.try_into().expect("slice with incorrect length")),
                 Some(value_int) => inst_pos= byte_to_number(value_int) as usize,
                 None => inst_pos = 0,
             }
         }else{
             match tmp_size_list {
-                //Some(value_int) => inst_pos = usize::from_be_bytes(value_int.try_into().expect("slice with incorrect length")),
                 Some(value_int) => inst_pos= byte_to_number_be(value_int) as usize,
                 None => inst_pos = 0,
             } 
@@ -1126,13 +457,11 @@ fn parse_local_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,endi
         tmp=tmp+size_int;
         if endian == 1 {
             match tmp_size_list {
-                //Some(value_int) => inst_pos= usize::from_le_bytes(value_int.try_into().expect("slice with incorrect length")),
                 Some(value_int) => inst_pos= byte_to_number(value_int) as usize,
                 None => inst_pos = 0,
             }
         }else{
             match tmp_size_list {
-                //Some(value_int) => inst_pos = usize::from_be_bytes(value_int.try_into().expect("slice with incorrect length")),
                 Some(value_int) => inst_pos= byte_to_number_be(value_int) as usize,
                 None => inst_pos = 0,
             } 
@@ -1152,13 +481,11 @@ fn parse_upvalue_list(ls : &[u8], begin : usize,size_int : usize,size_t:usize,en
     let mut tmp_size_list = ls.get(begin..begin+size_int);
     if endian == 1 {
         match tmp_size_list {
-            //Some(value_int) => size_local_list= usize::from_le_bytes(value_int.try_into().expect("slice with incorrect length")),
             Some(value_int) => size_local_list= byte_to_number(value_int) as usize,
             None => size_local_list = 0,
         }
     }else{
         match tmp_size_list {
-            //Some(value_int) => size_local_list = usize::from_be_bytes(value_int.try_into().expect("slice with incorrect length")),
             Some(value_int) => size_local_list= byte_to_number_be(value_int) as usize,
             None => size_local_list = 0,
         } 
@@ -1233,7 +560,6 @@ fn parse_inst_list(ls : &[u8], begin : usize,size_int : usize,size_inst:usize,en
     let mut taille_ls_inst: usize = 0;
     let size_code_inst: Option<&[u8]> = ls.get(begin..begin+size_int);
     match size_code_inst {
-        //Some(value_line) => taille_ls_inst= byte_to_number(value_line) as usize,
         Some(value_line) => if endian == 1 {
             taille_ls_inst = u32::from_le_bytes(value_line.try_into().expect("slice with incorrect length")) as usize
         }else{
@@ -1259,15 +585,8 @@ fn parse_inst_list(ls : &[u8], begin : usize,size_int : usize,size_inst:usize,en
     id_code_inst+(taille_ls_inst*size_inst)
 }
 
-
-fn main() -> io::Result<()> { //les arguments attendu sont 1. le nom du bytecode lua 2. la verbose pour voir le parsing du bytecode 
-    let args: Vec<String> = env::args().collect();
-    /*if args.len() < 3 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Not enough arguments provided"));
-    }
-     
-    */
-    let mut file = File::open("luac_boucle.out")?;
+fn main() -> io::Result<()> { 
+    let mut file = File::open("luac_aff_name.out")?;
     let mut buffer = Vec::new();
     io::copy(&mut file, &mut buffer)?; // en décimal
     file.seek(SeekFrom::Start(0))?;
@@ -1285,14 +604,13 @@ fn main() -> io::Result<()> { //les arguments attendu sont 1. le nom du bytecode
     let chunk = buffer.get(12..taille_fichier);
     
     let to_name : usize = 12+size_st;
-    let size_name = buffer.get(12..to_name);//12+valeur de size_st_op (même -1 pour ignorer le dernier caractère qui vaut 0)
+    let size_name = buffer.get(12..to_name);
     match size_name {
         Some(size_name) =>  { if verbose {println!("size_name : {:?}",size_name)}},
         None => println!("No size_name"),   
     }
     let mut size_t_value = 0;
     match size_name {
-        //Some(name_value) => size_t_value = usize::from_le_bytes(name_value.try_into().expect("Erreur de conversion")), // la fonction a été pris par ChatGpt
         Some(name_value) => size_t_value = byte_to_number(name_value) as usize ,
         None => println!("No size_t_value"),
     }
@@ -1367,7 +685,6 @@ fn main() -> io::Result<()> { //les arguments attendu sont 1. le nom du bytecode
     let size_func_proc = buffer.get(id_func_proc..id_func_proc+size_int);
     let mut taille_func_proc = -1;
     match size_func_proc {
-        //Some(value_line) => taille_inst= byte_to_number(value_line) as usize,
         Some(value_line) => taille_func_proc = i32::from_le_bytes(value_line.try_into().expect("slice with incorrect length")),
         None => println!("no Value"),
     }
@@ -1390,15 +707,9 @@ fn main() -> io::Result<()> { //les arguments attendu sont 1. le nom du bytecode
     if verbose {
         println!("tmp après upvalue {} ",tmp);
     }
-    unsafe {
-    if verbose {
-        //println!("List Inst : {:?}",INSTRUCTION);
-        //println!("List Const : {:?}",CONSTANTES);
-    }
-    }
     //la VM 
-    //init_stack(KB);
-    //init_Global();
-    //vm();
+    init_stack(KB);
+    init_Global();
+    vm();
     Ok(())
 }
