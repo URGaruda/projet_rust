@@ -46,7 +46,7 @@ const OPCODE_NAMES: [&str; 38] = [
         "RETURN", "FORLOOP", "FORPREP", "TFORLOOP", "SETLIST", "CLOSE", "CLOSURE",
         "VARARG"
 ];
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Closure {
     prototype: String,
     upvalues: Vec<TypeLua>,  
@@ -59,7 +59,7 @@ enum type_inst {
     IAsBx,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum TypeLua {
     Nil,
     Boolean(bool),
@@ -67,6 +67,16 @@ enum TypeLua {
     String(String), 
     Primitive(glb_func),
     Closure(Closure),
+}
+
+impl PartialOrd for TypeLua {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (self, other) {
+            (TypeLua::Number(a), TypeLua::Number(b)) => a.partial_cmp(b),
+            (TypeLua::String(a), TypeLua::String(b)) => a.partial_cmp(b),
+            _ => None, // Return None for unsupported comparisons
+        }
+    }
 }
 
 
@@ -125,11 +135,7 @@ impl TypeLua {
     fn pow(self,other:TypeLua)-> TypeLua {
         match (self, other) {
             (TypeLua::Number(a), TypeLua::Number(b)) => { 
-                let mut res : f64 = 1.0;
-                for i in 0..(b as i64) {
-                    res = res * a ;
-                }
-                TypeLua::Number(res)
+                TypeLua::Number(a.powf(b))
             },
             _ => TypeLua::Nil, 
         }
@@ -137,7 +143,7 @@ impl TypeLua {
 }
 
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum glb_func {
     print,
     nil,
@@ -242,6 +248,7 @@ fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
         match INSTRUCTION.get(PC as usize) {
             Some(&(opcode,a,b,c)) =>{
                 //println!("PC = {} , \n  Opcode = {} ,\nConstant list = {:?} .\n",PC,opcode,CONSTANTES);
+                //println!("PC = {} , Opcode = {} ,a = {}, b = {} , c = {} ",PC,opcode,a,b,c);
                 match opcode {
                     0 => {
                         STACK.liste[a as usize] = STACK.liste[b as usize].clone();
@@ -250,6 +257,7 @@ fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                     }
                     1 => {
                         STACK.liste[a as usize] = const_to_luaType(CONSTANTES.get(b as usize),false);
+                        //println!(" loadk STACK = {:?} ",STACK.liste[0..10].to_vec());
                         CONST_POINTER=CONST_POINTER+1;
                         PC=PC+1;
                     }
@@ -267,33 +275,114 @@ fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                         PC=PC+1;
                     }
                     5 => {
+                        //println!(" getglobal CONST = {:?} ",CONSTANTES.liste[0..CONSTANTES.liste.len()].to_vec());
                         let indice = simule_hash(CONSTANTES.get(b as usize).chaîne);
-                        STACK.liste[a as usize] = GLOBAL_Value[indice as usize].clone();
+                        if indice == GLOBAL_Key.len() as i32 {
+                            GLOBAL_Key.push(CONSTANTES.get(b as usize).chaîne);
+                            GLOBAL_Value.push(TypeLua::Closure(Closure { prototype: CONSTANTES.get(b as usize).chaîne, upvalues : {
+                                let mut ls:Vec<TypeLua> = Vec::new(); 
+                                let mut i = a ;
+                                while true {
+                                    match STACK.liste[i as usize].clone() {
+                                        TypeLua::Nil => break,
+                                        _=> ls.push(STACK.liste[i as usize].clone()),
+                                    }
+                                    i=i+1;
+                                }
+                                ls
+                            } }));
+                            STACK.liste[a as usize] = GLOBAL_Value[indice as usize].clone();
+                        }else{
+                            STACK.liste[a as usize] = GLOBAL_Value[indice as usize].clone();
+                        }
+                        //println!(" getglobal STACK = {:?} ",STACK.liste[0..10].to_vec());
                         CONST_POINTER=CONST_POINTER+1;
                         PC=PC+1;
                     }
                     7 => {
+                        //println!("constante = {:?} ",CONSTANTES.get(b as usize).chaîne);
                         GLOBAL_Key.push(CONSTANTES.get(b as usize).chaîne.clone());
                         GLOBAL_Value.push(STACK.liste[a as usize].clone());
                         PC=PC+1;
                     }
                     12 => {
-                        STACK.liste[a as usize] = STACK.liste[b as usize].clone() + STACK.liste[c as usize].clone() ;
+                        if b < 256 {
+                            if c < 256 {
+                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() + STACK.liste[c as usize].clone() ;
+                            }else{
+                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() + (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }else{
+                            if c < 256 {
+                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) + STACK.liste[c as usize].clone() ;
+                            }else{
+                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) + (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }
                         PC=PC+1;
                     }
                     13 => {
-                        STACK.liste[a as usize] = STACK.liste[b as usize].clone() - STACK.liste[c as usize].clone() ;
+                        if b < 256 {
+                            if c < 256 {
+                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() - STACK.liste[c as usize].clone() ;
+                            }else{
+                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() - (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }else{
+                            if c < 256 {
+                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) - STACK.liste[c as usize].clone() ;
+                            }else{
+                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) - (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }
                         PC=PC+1;
                     }
                     14 => {
-                        STACK.liste[a as usize] = STACK.liste[b as usize].clone() * STACK.liste[c as usize].clone() ;
+                        if b < 256 {
+                            if c < 256 {
+                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() * STACK.liste[c as usize].clone() ;
+                            }else{
+                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() * (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }else{
+                            if c < 256 {
+                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) * STACK.liste[c as usize].clone() ;
+                            }else{
+                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) * (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }
+                        PC=PC+1;
                     }
                     15 => {
-                        STACK.liste[a as usize] = STACK.liste[b as usize].clone() / STACK.liste[c as usize].clone() ;
+                        if b < 256 {
+                            if c < 256 {
+                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() / STACK.liste[c as usize].clone() ;
+                            }else{
+                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() / (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }else{
+                            if c < 256 {
+                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) / STACK.liste[c as usize].clone() ;
+                            }else{
+                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) / (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }STACK.liste[a as usize] = STACK.liste[b as usize].clone() / STACK.liste[c as usize].clone() ;
                         PC=PC+1;
                     }
                     16 => {
-                        STACK.liste[a as usize] = STACK.liste[b as usize].clone() % STACK.liste[c as usize].clone() ;
+                        if b < 256 {
+                            if c < 256 {
+                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() % STACK.liste[c as usize].clone() ;
+                            }else{
+                                STACK.liste[a as usize] = STACK.liste[b as usize].clone() % (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }else{
+                            if c < 256 {
+                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) % STACK.liste[c as usize].clone() ;
+                            }else{
+                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) % (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }
                         PC=PC+1;
                     }
                     17 => {
@@ -301,8 +390,6 @@ fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                             if c < 256 {
                                 STACK.liste[a as usize] = STACK.liste[b as usize].clone().pow(STACK.liste[c as usize].clone()) ;
                             }else{
-                                println!("Constante = {:?} ",const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false));
-                                println!("Variable = {:?}", STACK.liste[b as usize].clone() );
                                 STACK.liste[a as usize] = STACK.liste[b as usize].clone().pow(const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
                             }
                         }else{
@@ -331,6 +418,7 @@ fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                     }
                     21 => {
                         let mut chaine: String =String::new();
+                        //println!(" concat STACK = {:?} ",STACK.liste[0..10].to_vec());
                         for i in b..=c {
                             match &STACK.liste[i as usize] {
                                 TypeLua::String(val) => {
@@ -343,18 +431,99 @@ fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                         PC=PC+1;
 
                     }
+                    22 => {
+                        PC=PC+1+b as i32;
+                    }
+                    23 => {
+                        let verif:bool;
+                        if b < 256 {
+                            if c < 256 {
+                                verif = STACK.liste[b as usize].clone() == (STACK.liste[c as usize].clone()) ;
+                            }else{
+                                verif = STACK.liste[b as usize].clone() == (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }else{
+                            if c < 256 {
+                                verif = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) == (STACK.liste[c as usize].clone()) ;
+                            }else{
+                                verif = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) == (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }
+                        if verif {
+                            if a==1 {
+                                PC=PC+1;
+                            }
+                        }else{
+                            if a==0 {
+                                PC=PC+1;
+                            }
+                        }
+                        
+                        PC=PC+1;
+                    }
+                    24 => {
+                        let verif:bool;
+                        if b < 256 {
+                            if c < 256 {
+                                verif = STACK.liste[b as usize].clone() < (STACK.liste[c as usize].clone()) ;
+                            }else{
+                                verif = STACK.liste[b as usize].clone() < (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }else{
+                            if c < 256 {
+                                verif = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) < (STACK.liste[c as usize].clone()) ;
+                            }else{
+                                verif = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) < (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }
+                        if verif {
+                            if a==1 {
+                                PC=PC+1;
+                            }
+                        }else{
+                            if a==0 {
+                                PC=PC+1;
+                            }
+                        }
+                        PC=PC+1;
+                    }
+                    25 => {
+                        let verif:bool;
+                        if b < 256 {
+                            if c < 256 {
+                                verif = STACK.liste[b as usize].clone() <= (STACK.liste[c as usize].clone()) ;
+                            }else{
+                                verif = STACK.liste[b as usize].clone() <= (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }else{
+                            if c < 256 {
+                                verif = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) <= (STACK.liste[c as usize].clone()) ;
+                            }else{
+                                verif = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false) <= (const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }
+                        if verif {
+                            if a==1 {
+                                PC=PC+1;
+                            }
+                        }else{
+                            if a==0 {
+                                PC=PC+1;
+                            }
+                        }
+                        PC=PC+1;
+                    }
                     28 => { //R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
                         let nb_arg: i32 = b as i32 - 1;
                         let nb_return: i32 = c as i32 -1;
                         let get_fct = STACK.liste[a as usize].clone();
                         //println!(" get_fct = {:?} avec a = {} ",get_fct,a);
-                        //println!(" stack vaut = {:?} ",STACK);
                         match get_fct {
                             TypeLua::Primitive(primitive) => {
                                 //println!("entre dans la primitive");
                                 match primitive {
                                     glb_func::print => {
-                                        //println!("entre dans le print avec nb_arg = {} ",nb_arg);
+                                        //println!("entre dans le print avec nb_arg = {} \n et STACK = {:?} ",nb_arg,STACK.liste[0..10].to_vec());
                                         let mut j = 0;
                                         if nb_arg > 0 {
                                             while j < nb_arg{
@@ -365,10 +534,11 @@ fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                                             primitive_print(&STACK.liste[(a as i32 +1) as usize]);
                                         }
                                     }
-                                    _ => { println!("pas de primitive prévu pour cet instruction")}
+                                    _ => { println!("pas de primitive prévu pour cet instruction {:?}",get_fct )}
                                 }
                             }
                             TypeLua::Closure(closure) => {
+                                //println!("Closure : {:?} ",closure);
                                 let nb_arg: i32 = b as i32 - 1;
                                 let nb_return: i32 = c as i32 -1;
                                 let indice = FUNC_BODY[FB_POINTER as usize];
@@ -1097,7 +1267,7 @@ fn main() -> io::Result<()> { //les arguments attendu sont 1. le nom du bytecode
     }
      
     */
-    let mut file = File::open("luac_sqrt_16.out")?;
+    let mut file = File::open("luac_boucle.out")?;
     let mut buffer = Vec::new();
     io::copy(&mut file, &mut buffer)?; // en décimal
     file.seek(SeekFrom::Start(0))?;
@@ -1227,8 +1397,8 @@ fn main() -> io::Result<()> { //les arguments attendu sont 1. le nom du bytecode
     }
     }
     //la VM 
-    init_stack(KB);
-    init_Global();
-    vm();
+    //init_stack(KB);
+    //init_Global();
+    //vm();
     Ok(())
 }
