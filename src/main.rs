@@ -1,4 +1,5 @@
 #![allow(warnings)]
+use std::env;
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom};
 use std::convert::TryInto;
@@ -240,7 +241,7 @@ fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
     while(PC<INSTRUCTION.len() as i32){
         match INSTRUCTION.get(PC as usize) {
             Some(&(opcode,a,b,c)) =>{
-
+                //println!("PC = {} , \n  Opcode = {} ,\nConstant list = {:?} .\n",PC,opcode,CONSTANTES);
                 match opcode {
                     0 => {
                         STACK.liste[a as usize] = STACK.liste[b as usize].clone();
@@ -296,7 +297,22 @@ fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                         PC=PC+1;
                     }
                     17 => {
-                        STACK.liste[a as usize] = STACK.liste[b as usize].clone().pow(STACK.liste[c as usize].clone()) ;
+                        if b < 256 {
+                            if c < 256 {
+                                STACK.liste[a as usize] = STACK.liste[b as usize].clone().pow(STACK.liste[c as usize].clone()) ;
+                            }else{
+                                println!("Constante = {:?} ",const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false));
+                                println!("Variable = {:?}", STACK.liste[b as usize].clone() );
+                                STACK.liste[a as usize] = STACK.liste[b as usize].clone().pow(const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }else{
+                            if c < 256 {
+                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false).pow(STACK.liste[c as usize].clone()) ;
+                            }else{
+                                STACK.liste[a as usize] = const_to_luaType(CONSTANTES.liste[b as usize %256].clone(),false).pow(const_to_luaType(CONSTANTES.liste[c as usize %256].clone(),false)) ;
+                            }
+                        }
+
                         PC=PC+1;
                     }
                     18 => {
@@ -368,6 +384,7 @@ fn vm() -> Vec<TypeLua> { // fonction qui va agir de VM pour le bytecode lua
                                     STACK.liste[k as usize] = tmp_inst.liste[(a as i32 +i) as usize].clone();
                                     k=k+1;
                                 }
+                                //println!(" stack : {:?} ",STACK.liste[0..10].to_vec());
                                 let res = vm();
                                 STACK=tmp_inst.clone();
                                 CONSTANTES=tmp_const.clone();
@@ -1073,8 +1090,14 @@ fn parse_inst_list(ls : &[u8], begin : usize,size_int : usize,size_inst:usize,en
 }
 
 
-fn main() -> io::Result<()> {
-    let mut file = File::open("luac_aff_name.out")?;
+fn main() -> io::Result<()> { //les arguments attendu sont 1. le nom du bytecode lua 2. la verbose pour voir le parsing du bytecode 
+    let args: Vec<String> = env::args().collect();
+    /*if args.len() < 3 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Not enough arguments provided"));
+    }
+     
+    */
+    let mut file = File::open("luac_sqrt_16.out")?;
     let mut buffer = Vec::new();
     io::copy(&mut file, &mut buffer)?; // en décimal
     file.seek(SeekFrom::Start(0))?;
@@ -1090,10 +1113,6 @@ fn main() -> io::Result<()> {
     //Body 
 
     let chunk = buffer.get(12..taille_fichier);
-    match chunk {
-        Some(chunk) => {if verbose {println!("chunk : {:?}",chunk)}},
-        None => println!("No chunk"),   
-    }
     
     let to_name : usize = 12+size_st;
     let size_name = buffer.get(12..to_name);//12+valeur de size_st_op (même -1 pour ignorer le dernier caractère qui vaut 0)
